@@ -251,6 +251,20 @@ async function load(){
     state._edit=JSON.parse(JSON.stringify(state.config));
     state._preset=detectPreset(state._edit);
     state._n=guessN(state._edit);
+    // Freshly-registered role: groups [] + grant false is the "unconfigured →
+    // grants to nobody" sentinel (Convention 42). render() shows "Anyone who
+    // linked their Kick" pre-selected for this state, but the edit buffer still
+    // says grant=false, so recomputeDirty() sees no change and Save stays
+    // disabled — the admin can't save the default they're being shown. Align
+    // the edit buffer with the displayed preset so it's correctly dirty and a
+    // single Save applies the sensible default instead of re-persisting the
+    // grant-to-nobody sentinel.
+    if(state._preset==='anyone_unset'){
+      state._edit.grant_on_any_relation=true;
+      state._edit.groups=[];
+      state._preset='anyone';
+      recomputeDirty();
+    }
     render(); autoPreview();
   }catch(e){ document.getElementById('app').innerHTML=
     `<div class="toast e">Network error: ${esc(String(e))}</div>`; }
