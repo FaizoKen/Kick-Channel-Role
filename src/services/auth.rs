@@ -24,6 +24,37 @@ struct GuildPermissionResp {
     is_manager: bool,
 }
 
+/// Classify a non-success Auth Gateway HTTP response.
+///
+/// Only a genuine `401 Unauthorized` means the caller's session is actually
+/// bad (cookie rejected by the gateway despite passing local verification —
+/// e.g. a `SESSION_SECRET` mismatch). That stays `UnauthorizedWith` so
+/// user-facing pages show a "sign in" prompt.
+///
+/// EVERY other non-success status — 502/503/504 from a gateway
+/// restart/deploy, a Cloudflare Tunnel blip, gateway overload — is a
+/// *transient server problem*, NOT the user being logged out. Mapping those
+/// to `Internal` (HTTP 500) is what stops the users page from falsely
+/// telling a signed-in member to re-authenticate on every gateway hiccup
+/// (the "sometimes the users page doesn't work" symptom). Mirrors
+/// `Genshin-Player-Role/src/routes/players.rs::auth_gateway_get` and
+/// BLUEPRINT §16.5.
+fn classify_gateway_status(
+    status: reqwest::StatusCode,
+    body: &str,
+    gateway_url: &str,
+) -> AppError {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        AppError::UnauthorizedWith(format!(
+            "The Auth Gateway rejected your session ({status}). Please sign in again."
+        ))
+    } else {
+        AppError::Internal(format!(
+            "Auth Gateway at {gateway_url} returned {status}: {body}"
+        ))
+    }
+}
+
 /// Pull `rl_session` cookie value via CookieJar (Convention 35) and verify it.
 pub fn read_session(jar: &CookieJar, secret: &str) -> Result<(String, String), AppError> {
     let cookie = jar.get("rl_session").ok_or_else(|| {
@@ -70,9 +101,11 @@ pub async fn require_manager(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(AppError::UnauthorizedWith(format!(
-            "Auth Gateway rejected the request ({status}): {body}"
-        )));
+        return Err(classify_gateway_status(
+            status,
+            &body,
+            &state.config.auth_gateway_url,
+        ));
     }
     let parsed: GuildPermissionResp = resp
         .json()
@@ -171,9 +204,11 @@ pub async fn guild_permission(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(AppError::UnauthorizedWith(format!(
-            "Auth Gateway rejected the request ({status}): {body}"
-        )));
+        return Err(classify_gateway_status(
+            status,
+            &body,
+            &state.config.auth_gateway_url,
+        ));
     }
     let parsed: GuildPermissionResp = resp
         .json()
