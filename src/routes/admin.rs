@@ -611,6 +611,25 @@ pub async fn role_config_save(
     }
 
     let parsed = rule_validator::parse_rule_tree(body.tree)?;
+
+    // A relation rule (followers / subs / VIPs / mods / custom groups) is
+    // evaluated against a specific Kick channel; with none bound it would
+    // silently grant the role to nobody (Convention 42 / the preview
+    // "nobody" short-circuit in `preview_count_for`). Reject so the dashboard
+    // surfaces the reason via rl:toast instead of persisting a no-op rule.
+    // Note: kept here (not in the shared `parse_rule_tree`) so the
+    // POST /preview path can still show a "0 match" dry-run without a channel.
+    if parsed.kick_channel_id.is_none()
+        && !parsed.rule_tree.grant_on_any_relation
+        && !parsed.rule_tree.groups.is_empty()
+    {
+        return Err(AppError::BadRequest(
+            "Pick the Kick channel this rule checks against before saving — \
+             without a connected channel it would grant the role to nobody."
+                .into(),
+        ));
+    }
+
     let tree_json = serde_json::to_value(&parsed.rule_tree)
         .map_err(|e| AppError::Internal(format!("serialize rule_tree: {e}")))?;
 

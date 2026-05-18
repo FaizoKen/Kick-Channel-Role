@@ -73,6 +73,54 @@ pub async fn verify_status(
 }
 
 // ---------------------------------------------------------------------
+// POST /verify/unlink — self-service: drop the caller's Kick link
+// ---------------------------------------------------------------------
+
+pub async fn verify_unlink(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    // State-changing, cookie-authed → same Origin gate as /verify/kick.
+    csrf::verify_origin(&headers, &state.allowed_origins)?;
+    let (discord_id, _) = read_session(&jar, &state.config.session_secret)?;
+
+    // Delete the link, returning the Kick user id so we can also drop the
+    // now-orphaned per-channel relation rows. `channel_relations` is keyed by
+    // `kick_user_id` with no FK to `kick_users`, so nothing cascades — we
+    // must clean it explicitly or a re-link would inherit stale facts.
+    let removed: Option<(i64,)> = sqlx::query_as(
+        "DELETE FROM kick_users WHERE discord_id = $1 RETURNING kick_user_id",
+    )
+    .bind(&discord_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some((kick_user_id,)) = removed else {
+        return Err(AppError::NotFound(
+            "No linked Kick account to unlink.".into(),
+        ));
+    };
+
+    sqlx::query("DELETE FROM channel_relations WHERE kick_user_id = $1")
+        .bind(kick_user_id)
+        .execute(&state.pool)
+        .await?;
+
+    // Re-evaluate every role this member held: with the link gone they
+    // qualify for nothing, so the worker strips the roles via RoleLogic and
+    // clears `role_assignments`. Same enqueue the link flow uses — keeps role
+    // state eventually consistent without blocking the response. (The user
+    // disappears from the public users list immediately, since that now
+    // lists by `kick_users`.)
+    crate::services::jobs::enqueue_player_sync(&state.pool, &discord_id).await?;
+
+    tracing::info!(discord_id = %discord_id, kick_user_id, "Viewer unlinked");
+
+    Ok(Json(json!({ "success": true })))
+}
+
+// ---------------------------------------------------------------------
 // POST /verify/login — Convention 27: relative return_to
 // ---------------------------------------------------------------------
 

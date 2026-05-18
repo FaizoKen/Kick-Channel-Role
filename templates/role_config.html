@@ -289,6 +289,13 @@ function render(){
   const cfg=state._edit, app=document.getElementById('app');
   const chans=state.channels||[];
   const cur=state._preset, showChan=needsChannel(cur);
+  // No channel picker any more: a relation rule auto-binds to the most
+  // recently connected channel (state.channels is ordered connected_at DESC).
+  // The admin changes the active channel by connecting a different one.
+  if(showChan && chans.length>0 &&
+     String(cfg.kick_channel_id)!==String(chans[0].kick_channel_id)){
+    cfg.kick_channel_id=chans[0].kick_channel_id; recomputeDirty();
+  }
   const sel=chans.find(x=>String(x.kick_channel_id)===String(cfg.kick_channel_id));
 
   const opts=presets().map(p=>{
@@ -344,14 +351,13 @@ function render(){
         </div></div>` : `
       <div class="blk"><label>Your Kick channel</label>
         <div class="row">
-          <select id="channel">
-            <option value="">— pick a channel —</option>
-            ${chans.map(x=>`<option value="${x.kick_channel_id}" ${String(cfg.kick_channel_id)===String(x.kick_channel_id)?'selected':''}>${esc(x.display_name)} (@${esc(x.kick_slug)})${x.is_live?' • LIVE':''}</option>`).join('')}
-          </select>
-          <button id="connect">+ Connect another</button>
+          <div class="inline" style="flex:1; min-width:0">
+            <b>${esc((sel||chans[0]).display_name)}</b>
+            <span style="color:#8a93a4">@${esc((sel||chans[0]).kick_slug)}</span>${(sel||chans[0]).is_live?' • <span class="live">LIVE</span>':''}
+          </div>
+          <button id="connect">Connect a different channel</button>
         </div>
         ${sel&&sel.is_live?`<p class="count">🔴 <span class="live">${esc(sel.display_name)} is live</span>${sel.current_category?' — '+esc(sel.current_category):''}</p>`:''}
-        ${!cfg.kick_channel_id?'<p class="count" style="color:#fbbf24">Pick a channel — this option grants to nobody until you do.</p>':''}
       </div>`;
   }
 
@@ -379,8 +385,6 @@ function render(){
     <div id="msg"></div>`;
 
   app.querySelectorAll('input[name=who]').forEach(r=>r.addEventListener('change',()=>choose(r.value)));
-  const ch=document.getElementById('channel');
-  if(ch) ch.addEventListener('change',e=>{ cfg.kick_channel_id=e.target.value?Number(e.target.value):null; recomputeDirty(); render(); });
   const cc=document.getElementById('connect'); if(cc) cc.addEventListener('click',connectChannel);
   wireCopy('copy', VERIFY_URL);
   wireCopy('copysup', sup.url);
@@ -543,6 +547,18 @@ async function doPreviewEdit(){
 }
 async function doSave(){
   const cfg=state._edit;
+  // A relation rule (followers / subs / VIPs / mods / loyal / custom groups)
+  // is evaluated against a specific Kick channel. Saving one with no channel
+  // bound would silently grant the role to nobody (Convention 42 / the
+  // preview "nobody" short-circuit). Reject before the round-trip and alert
+  // the dashboard so the admin sees why "Save" did nothing. Same condition
+  // the backend enforces, so the two never disagree.
+  if(!cfg.grant_on_any_relation && (cfg.groups||[]).length>0 && !cfg.kick_channel_id){
+    flash('Pick the Kick channel this rule checks against before saving — '
+      +'without a connected channel it grants the role to nobody.',true);
+    postToast('Pick a Kick channel before saving — this rule grants to nobody without one.');
+    return;
+  }
   const payload={ rule_tree_version:state.rule_tree_version,
     kick_channel_id:cfg.kick_channel_id, grant_on_any_relation:cfg.grant_on_any_relation,
     groups: cfg.grant_on_any_relation?[]:(cfg.groups||[]) };

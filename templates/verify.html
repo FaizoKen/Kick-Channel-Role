@@ -38,6 +38,10 @@
   .btn-secondary {
     background: #2a2f3a; color: #e8eaed;
   }
+  .btn-danger {
+    background: #3a2030; color: #fca5a5; margin-left: 8px;
+  }
+  .btn-danger:hover { background: #4a2636; }
   .muted { font-size: 12px; color: #7a8497; margin-top: 16px; }
   #step { display: none; }
   #step.shown { display: block; }
@@ -55,8 +59,9 @@
     .row { gap: 8px; margin-top: 16px; }
     .pill { font-size: 12.5px; padding: 7px 11px; }
     /* The primary CTA reads better as a full-width tap target on phones. */
-    #link-kick, #link-kick-2,
+    #link-kick, #link-kick-2, #unlink-kick,
     #step-discord form > button { display: block; width: 100%; }
+    .btn-danger { margin-left: 0; margin-top: 8px; }
   }
 </style>
 </head>
@@ -100,6 +105,7 @@
     <p>You're all set. Role assignments refresh automatically — give it up to a minute after subscribing / following.</p>
     <p class="muted">Need to switch Kick accounts? Click below — re-linking overrides the old one.</p>
     <button id="link-kick-2" class="btn-secondary">Re-link Kick</button>
+    <button id="unlink-kick" class="btn-danger">Unlink Kick</button>
     <div class="logout-row">
       <form class="logout-form" method="POST" action="/auth/logout">
         <button type="submit" class="logout">Sign out of Discord</button>
@@ -151,8 +157,24 @@ async function startKickFlow() {
   window.location.href = data.authorize_url;
 }
 
+async function unlinkKick() {
+  if (!confirm('Unlink your Kick account? Any roles it granted will be removed.')) return;
+  const r = await fetch(API + '/verify/unlink', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: 'unknown' }));
+    alert('Could not unlink: ' + (err.error || r.status));
+    return;
+  }
+  refresh();
+}
+
 document.getElementById('link-kick').addEventListener('click', startKickFlow);
 document.getElementById('link-kick-2').addEventListener('click', startKickFlow);
+document.getElementById('unlink-kick').addEventListener('click', unlinkKick);
 
 // Logout forms POST to the Auth Gateway on the same origin as BASE_URL,
 // with return_to pointing back to /verify so the user lands here signed-out.

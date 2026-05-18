@@ -24,6 +24,14 @@ struct GuildPermissionResp {
     is_manager: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct GuildMembersResp {
+    #[serde(default)]
+    discord_ids: Vec<String>,
+    #[serde(default)]
+    guild_name: Option<String>,
+}
+
 /// Classify a non-success Auth Gateway HTTP response.
 ///
 /// Only a genuine `401 Unauthorized` means the caller's session is actually
@@ -215,4 +223,64 @@ pub async fn guild_permission(
         is_member: parsed.is_member,
         is_manager: parsed.is_manager,
     })
+}
+
+/// Fetch the Auth Gateway's current member list + display name for
+/// `guild_id`, authenticated with the viewer's `rl_session` cookie.
+///
+/// This is the user-cookie API (`/auth/guild_members`) the public user-list
+/// page is supposed to use (BLUEPRINT §16.3) — the same call the reference
+/// plugin's `players_data` makes. The gateway only returns the list when the
+/// caller is themselves a member, which blocks arbitrary guild enumeration.
+///
+/// The Auth Gateway is the single source of truth for "who is in this
+/// guild" — never a local table, and never the incidental presence of a
+/// `channel_relations` row. One call returns both the membership filter and
+/// the guild name.
+pub async fn guild_members(
+    state: &Arc<AppState>,
+    jar: &CookieJar,
+    guild_id: &str,
+) -> Result<(Vec<String>, Option<String>), AppError> {
+    // Local fast-fail: a missing/expired cookie is a clean 401 before any
+    // outbound HTTP (mirrors `guild_permission`).
+    read_session(jar, &state.config.session_secret)?;
+
+    // Convention 31: re-encode via Cookie::encoded() so the gateway's
+    // parse_encoded doesn't double-decode percent-escapes.
+    let cookie_val = jar
+        .get("rl_session")
+        .map(|c| {
+            Cookie::build(("rl_session", c.value().to_string()))
+                .build()
+                .encoded()
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let url = format!(
+        "{}/auth/guild_members?guild_id={guild_id}",
+        state.config.auth_gateway_url
+    );
+    let resp = state
+        .http
+        .get(&url)
+        .header("Cookie", cookie_val)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("auth_gateway members request: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(classify_gateway_status(
+            status,
+            &body,
+            &state.config.auth_gateway_url,
+        ));
+    }
+    let parsed: GuildMembersResp = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("auth_gateway response not JSON: {e}")))?;
+    Ok((parsed.discord_ids, parsed.guild_name))
 }

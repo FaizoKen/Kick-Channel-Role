@@ -22,8 +22,7 @@ use axum_extra::extract::cookie::CookieJar;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::services::auth::{extract_bearer, guild_permission, require_guild_admin};
-use crate::services::auth_gateway;
+use crate::services::auth::{extract_bearer, guild_members, guild_permission, require_guild_admin};
 use crate::services::csrf;
 use crate::AppState;
 
@@ -74,11 +73,23 @@ pub async fn users_data(
         ));
     }
 
-    // One row per linked viewer with any relation to a channel connected to
-    // this guild. When a viewer is connected to multiple guild channels we
-    // collapse to a single row by taking the max/OR of their stats. The
-    // collation is per-guild, so a viewer who subs to two channels in this
-    // guild appears once with `is_subscriber = true`.
+    // "Who is in this guild" comes from the Auth Gateway, NOT from a local
+    // table and NOT from the incidental presence of a `channel_relations`
+    // row. A member who linked their Kick account must appear the instant
+    // they link — before any broadcaster is connected and before any
+    // follow/sub webhook lands — with the relationship columns simply blank.
+    // This is the membership-centric pattern the reference plugin uses
+    // (Genshin-Player-Role `players_data`) and BLUEPRINT §16.3 prescribes;
+    // one user-cookie call returns both the member filter and the guild name.
+    let (member_ids, guild_name) = guild_members(&state, &jar, &guild_id).await?;
+
+    // One row per linked viewer who is a current member of this guild.
+    // `channel_relations` is LEFT-joined and scoped to the broadcasters this
+    // guild has connected, then collapsed (OR / max / sum) so a viewer linked
+    // to several of the guild's channels appears once. A viewer with no
+    // relation row at all still appears, with all flags false / counts zero
+    // (hence the COALESCE around the bool_or aggregates — with the LEFT JOIN
+    // they can now be NULL).
     let rows = sqlx::query_as::<
         _,
         (
@@ -102,10 +113,10 @@ pub async fn users_data(
                 ku.discord_name, \
                 ku.kick_username, \
                 ku.kick_user_id, \
-                bool_or(cr.is_follower)       AS is_follower, \
-                bool_or(cr.is_subscriber)     AS is_subscriber, \
-                bool_or(cr.is_vip)            AS is_vip, \
-                bool_or(cr.is_moderator)      AS is_moderator, \
+                COALESCE(bool_or(cr.is_follower),   false) AS is_follower, \
+                COALESCE(bool_or(cr.is_subscriber), false) AS is_subscriber, \
+                COALESCE(bool_or(cr.is_vip),        false) AS is_vip, \
+                COALESCE(bool_or(cr.is_moderator),  false) AS is_moderator, \
                 COALESCE(max(cr.sub_months_cumulative), 0) AS sub_months, \
                 COALESCE(max(cr.sub_streak_months),    0) AS sub_streak, \
                 COALESCE(sum(cr.gifted_subs_given),    0)::int AS gifted, \
@@ -113,34 +124,19 @@ pub async fn users_data(
                 max(cr.last_seen_at)          AS last_seen_at, \
                 ku.linked_at \
          FROM kick_users ku \
-         JOIN channel_relations cr USING (kick_user_id) \
-         JOIN guild_broadcasters gb USING (kick_channel_id) \
-         WHERE gb.guild_id = $1 \
+         LEFT JOIN guild_broadcasters gb ON gb.guild_id = $1 \
+         LEFT JOIN channel_relations cr \
+                ON cr.kick_user_id = ku.kick_user_id \
+               AND cr.kick_channel_id = gb.kick_channel_id \
+         WHERE ku.discord_id = ANY($2) \
          GROUP BY ku.discord_id, ku.discord_name, ku.kick_username, ku.kick_user_id, ku.linked_at \
          ORDER BY ku.kick_username ASC \
          LIMIT 1000",
     )
     .bind(&guild_id)
+    .bind(&member_ids)
     .fetch_all(&state.pool)
     .await?;
-
-    // Best-effort lookup of the Discord guild's display name. A gateway hiccup
-    // shouldn't break the listing — fall back to None and the UI hides the
-    // name.
-    let guild_name = match auth_gateway::fetch_guild_member_ids_full(
-        &state.http,
-        &state.config.auth_gateway_url,
-        &state.config.internal_api_key,
-        &guild_id,
-    )
-    .await
-    {
-        Ok((_, name)) => name,
-        Err(e) => {
-            tracing::warn!(guild_id, "auth_gateway guild_name lookup failed: {e}");
-            None
-        }
-    };
 
     let users = rows
         .into_iter()
