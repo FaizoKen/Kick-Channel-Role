@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kick channel connected</title>
+<link rel="icon" href="{{BASE_URL}}/favicon.ico">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    background: #0f1115;
+    color: #e8eaed;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    margin: 0; padding: 20px 16px;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    width: 100%;
+    max-width: 480px;
+    padding: 32px 28px;
+    background: #1a1d24;
+    border: 1px solid #2a2f3a;
+    border-radius: 12px;
+    text-align: center;
+  }
+  h1 { margin: 0 0 8px; font-size: 22px; overflow-wrap: anywhere; }
+  p { color: #b8bcc6; line-height: 1.5; margin: 8px 0; overflow-wrap: anywhere; }
+  .ok { color: #53d49a; font-size: 40px; line-height: 1; margin-bottom: 12px; }
+  code {
+    background: #0b0d12; padding: 2px 6px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; word-break: break-all;
+  }
+  button.primary {
+    margin-top: 20px;
+    background: #53d49a; color: #08110b; border: 0;
+    padding: 10px 18px; font-weight: 600; border-radius: 8px;
+    cursor: pointer;
+  }
+  .logout-row { margin-top: 14px; }
+  .logout-form { display: inline; margin: 0; }
+  button.logout {
+    background: none; color: #8a93a4; border: 1px solid #2a2f3a;
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer;
+  }
+  button.logout:hover { color: #fca5a5; border-color: #5c2630; }
+  @media (max-width: 480px) {
+    .card { padding: 24px 18px; border-radius: 10px; }
+    h1 { font-size: 19px; }
+    .ok { font-size: 36px; }
+    button.primary { width: 100%; padding: 12px 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="ok">&#10003;</div>
+  <h1>Kick channel connected</h1>
+  <p><strong>{{KICK_USERNAME}}</strong> is now linked to this server's Kick-Channel-Role config.</p>
+  <p>Return to the RoleLogic dashboard to pick this channel on any role link in <code>{{GUILD_ID}}</code>.</p>
+  <button id="close-btn" class="primary">Close this tab</button>
+  <p id="close-hint" style="display:none; color:#8a93a4; font-size:12px; margin-top:10px">
+    Your browser blocked auto-close. You can close this tab manually.
+  </p>
+  <div class="logout-row">
+    <form class="logout-form" method="POST" action="/auth/logout">
+      <button type="submit" class="logout">Sign out of Discord</button>
+    </form>
+  </div>
+</div>
+<script>
+(function wireLogout(){
+  const u = new URL("{{BASE_URL}}");
+  const action = u.origin + '/auth/logout?return_to=' + encodeURIComponent(u.pathname + '/');
+  document.querySelectorAll('form.logout-form').forEach(f => { f.action = action; });
+})();
+
+// This tab is usually opened via `window.open(..., 'noopener')` from the
+// admin iframe — `noopener` severs the opener reference, which means most
+// browsers ALSO refuse a programmatic `window.close()`. Try anyway; on
+// failure, swap the button to a hint so the user knows to close manually.
+// The opener page polls on visibility/focus and will pick up the new
+// broadcaster on its own.
+(function wireClose(){
+  const btn = document.getElementById('close-btn');
+  const hint = document.getElementById('close-hint');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    window.close();
+    setTimeout(() => {
+      if (!window.closed) {
+        btn.style.display = 'none';
+        if (hint) hint.style.display = 'block';
+      }
+    }, 150);
+  });
+})();
+</script>
+</body>
+</html>

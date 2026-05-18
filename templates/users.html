@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linked users</title>
+<link rel="icon" href="{{BASE_URL}}/favicon.ico">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0 auto; background:#0f1115; color:#e8eaed;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    padding:28px 20px; max-width:1100px; }
+  h1 { font-size:22px; margin:0 0 4px; word-break:break-word; }
+  .sub { color:#8a93a4; margin:0 0 24px; font-size:13px; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start;
+    gap:12px; margin-bottom:18px; flex-wrap:wrap; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px;
+    flex-wrap:wrap; }
+  input.search { background:#161922; color:#e8eaed; border:1px solid #2a2f3a;
+    border-radius:8px; padding:8px 12px; font-size:13px; min-width:0; flex:1 1 240px; }
+  .filter {
+    background:#161922; color:#8a93a4; border:1px solid #2a2f3a;
+    padding:6px 10px; border-radius:999px; font-size:12px; cursor:pointer;
+    font-family:inherit;
+  }
+  .filter.active { color:#0f1115; background:#53d49a; border-color:#53d49a; }
+  .count { color:#8a93a4; font-size:12px; margin-left:auto; }
+  .tablewrap { width:100%; }
+  table { width:100%; border-collapse:collapse; background:#161922;
+    border:1px solid #2a2f3a; border-radius:12px; overflow:hidden; }
+  th, td { padding:10px 12px; text-align:left; font-size:13px;
+    border-bottom:1px solid #1f242f; vertical-align:top; }
+  th { background:#1a1e28; color:#8a93a4; font-weight:600;
+    font-size:11px; letter-spacing:.05em; text-transform:uppercase; }
+  tr:last-child td { border-bottom:none; }
+  tr.hidden { display:none; }
+  .badge {
+    display:inline-block; padding:2px 8px; border-radius:999px;
+    font-size:11px; font-weight:600; margin-right:4px;
+  }
+  .b-sub  { background:#1d3a2b; color:#53d49a; }
+  .b-vip  { background:#3a2b1d; color:#f6c177; }
+  .b-mod  { background:#1d2b3a; color:#7aa2f7; }
+  .b-fol  { background:#252a36; color:#a9b1c3; }
+  .meta { color:#8a93a4; font-size:12px; }
+  .empty, .notice { background:#161922; border:1px solid #2a2f3a;
+    border-radius:12px; padding:24px; text-align:center; color:#8a93a4; }
+  a.btn { display:inline-block; margin-top:12px; background:#5865f2; color:#fff;
+    padding:10px 18px; border-radius:8px; text-decoration:none; font-weight:600; }
+  .logout-form { margin:0; }
+  button.logout {
+    background:none; color:#8a93a4; border:1px solid #2a2f3a;
+    padding:6px 12px; border-radius:6px; font-size:12px; font-weight:600;
+    cursor:pointer; font-family:inherit;
+  }
+  button.logout:hover { color:#fca5a5; border-color:#5c2630; }
+  /* Phones: collapse the 7-col table into stacked cards. Each <td> gets a
+     `data-label` from its column header, rendered to the left of the value. */
+  @media (max-width: 640px) {
+    body { padding:18px 14px; }
+    h1 { font-size:19px; }
+    .sub { margin-bottom:18px; }
+    .header { gap:10px; }
+    .toolbar { gap:8px; margin-bottom:12px; }
+    input.search { flex-basis:100%; }
+    .count { margin-left:0; flex-basis:100%; }
+    table, thead, tbody, tr, td { display:block; width:100%; }
+    thead { position:absolute; left:-9999px; }
+    table { background:transparent; border:0; border-radius:0; }
+    tr { background:#161922; border:1px solid #2a2f3a; border-radius:12px;
+      padding:10px 12px; margin-bottom:10px; }
+    td { border:0; padding:5px 0; display:flex; gap:10px;
+      align-items:baseline; justify-content:space-between; font-size:13px; }
+    td::before { content:attr(data-label); color:#8a93a4; font-size:11px;
+      letter-spacing:.05em; text-transform:uppercase; font-weight:600;
+      flex:0 0 auto; }
+    td > * { text-align:right; min-width:0; word-break:break-word; }
+    /* First cell (Discord name) is the card header — span full width. */
+    td.row-head { display:block; padding:2px 0 8px;
+      border-bottom:1px solid #1f242f; margin-bottom:6px; font-weight:600; }
+    td.row-head::before { display:none; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <h1 id="page-title">Linked users</h1>
+    <p class="sub">Every Discord member in this server who linked their Kick account, with their relationship to your connected channels.</p>
+  </div>
+  <form id="logout-form" class="logout-form" method="POST" action="/auth/logout" style="display:none">
+    <button type="submit" class="logout">Sign out of Discord</button>
+  </form>
+</div>
+
+<div id="toolbar" class="toolbar" style="display:none">
+  <input id="q" class="search" type="search" placeholder="Search Kick username, Discord name, or Discord ID…" autocomplete="off">
+  <button class="filter active" data-f="all">All</button>
+  <button class="filter" data-f="is_subscriber">Subscribers</button>
+  <button class="filter" data-f="is_vip">VIP</button>
+  <button class="filter" data-f="is_moderator">Moderators</button>
+  <button class="filter" data-f="is_follower">Followers</button>
+  <span id="count" class="count"></span>
+</div>
+
+<div id="root"><p class="empty">Loading…</p></div>
+
+<script>
+const BASE_URL="{{BASE_URL}}", GUILD_ID="{{GUILD_ID}}";
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+const RETURN_TO = new URL(BASE_URL).pathname + '/users/' + GUILD_ID;
+const AUTH_ORIGIN = new URL(BASE_URL).origin;
+
+(function wireLogout(){
+  const f = document.getElementById('logout-form');
+  if (f) f.action = AUTH_ORIGIN + '/auth/logout?return_to=' + encodeURIComponent(RETURN_TO);
+})();
+function showLogout(show){
+  const f = document.getElementById('logout-form');
+  if (f) f.style.display = show ? '' : 'none';
+}
+
+function loginNotice(msg){
+  return `<div class="notice"><p>${esc(msg)}</p>
+    <a class="btn" href="${AUTH_ORIGIN}/auth/login?return_to=${encodeURIComponent(RETURN_TO)}">Sign in with Discord</a></div>`;
+}
+
+let ALL = [];
+let FILTER = 'all';
+
+function badges(u){
+  const out = [];
+  if (u.is_subscriber) out.push(`<span class="badge b-sub">SUB${u.sub_months?` ${u.sub_months}mo`:''}</span>`);
+  if (u.is_vip)        out.push('<span class="badge b-vip">VIP</span>');
+  if (u.is_moderator)  out.push('<span class="badge b-mod">MOD</span>');
+  if (u.is_follower && !u.is_subscriber) out.push('<span class="badge b-fol">Follower</span>');
+  return out.join('') || '<span class="meta">—</span>';
+}
+
+function matchesSearch(u, q){
+  if (!q) return true;
+  const hay = [
+    u.username,
+    u.discord_name,
+    u.discord_id,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(q);
+}
+
+function render(){
+  const q = (document.getElementById('q').value || '').trim().toLowerCase();
+  const rows = ALL.filter(u => {
+    if (FILTER !== 'all' && !u[FILTER]) return false;
+    if (!matchesSearch(u, q)) return false;
+    return true;
+  });
+  document.getElementById('count').textContent =
+    `${rows.length} of ${ALL.length} shown`;
+
+  if (!rows.length) {
+    document.getElementById('root').innerHTML =
+      '<div class="empty">No users match.</div>';
+    return;
+  }
+
+  const body = rows.map(u => {
+    const followed = u.followed_at ? esc(u.followed_at.slice(0,10)) : '—';
+    const seen     = u.last_seen_at ? esc(u.last_seen_at.slice(0,10)) : '—';
+    const discord  = u.discord_name
+      ? esc(u.discord_name)
+      : `<span class="meta">${esc(u.discord_id || '—')}</span>`;
+    return `<tr>
+      <td class="row-head" data-label="Discord">${discord}</td>
+      <td data-label="Kick">${esc(u.username)}</td>
+      <td data-label="Status">${badges(u)}</td>
+      <td data-label="Sub months">${u.sub_months || 0}${u.sub_streak > 1 ? ` <span class="meta">(${u.sub_streak} streak)</span>` : ''}</td>
+      <td data-label="Gifted">${u.gifted || 0}</td>
+      <td data-label="Followed"><span class="meta">${followed}</span></td>
+      <td data-label="Last seen"><span class="meta">${seen}</span></td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('root').innerHTML = `
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>Discord</th><th>Kick</th><th>Status</th><th>Sub months</th><th>Gifted</th>
+          <th>Followed</th><th>Last seen</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
+function wireToolbar(){
+  document.getElementById('toolbar').style.display = '';
+  document.getElementById('q').addEventListener('input', render);
+  document.querySelectorAll('.filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      FILTER = btn.dataset.f;
+      document.querySelectorAll('.filter').forEach(b => b.classList.toggle('active', b === btn));
+      render();
+    });
+  });
+}
+
+async function load(){
+  let r;
+  try { r = await fetch(`${BASE_URL}/users/${GUILD_ID}/data`,{credentials:'include',cache:'no-store'}); }
+  catch(e){ document.getElementById('root').innerHTML='<div class="notice"><p>Network error.</p></div>'; return; }
+
+  if(r.status===401){
+    showLogout(false);
+    const d=await r.json().catch(()=>({}));
+    document.getElementById('root').innerHTML=loginNotice(d.error||'Sign in to view this list.');
+    return;
+  }
+  if(r.status===403){
+    showLogout(true);
+    const d=await r.json().catch(()=>({}));
+    document.getElementById('root').innerHTML=`<div class="notice"><p>${esc(d.error||'Access denied.')}</p></div>`;
+    return;
+  }
+  if(!r.ok){ document.getElementById('root').innerHTML='<div class="notice"><p>Could not load.</p></div>'; return; }
+
+  showLogout(true);
+  const d=await r.json();
+  if (d.guild_name) {
+    const t = document.getElementById('page-title');
+    if (t) t.textContent = `Linked users — ${d.guild_name}`;
+    document.title = `Linked users — ${d.guild_name}`;
+  }
+  ALL = d.users || [];
+  if (!ALL.length) {
+    document.getElementById('root').innerHTML = '<div class="empty">No linked users yet.</div>';
+    return;
+  }
+  wireToolbar();
+  render();
+}
+load();
+</script>
+</body>
+</html>

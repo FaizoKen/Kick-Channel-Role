@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link your Kick account</title>
+<link rel="icon" href="{{BASE_URL}}/favicon.ico">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    background: #0f1115; color: #e8eaed; margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px 16px;
+  }
+  .card {
+    width: 100%; max-width: 480px; padding: 32px 28px; background: #1a1d24;
+    border: 1px solid #2a2f3a; border-radius: 12px;
+  }
+  h1 { margin: 0 0 12px; font-size: 22px; }
+  p { color: #b8bcc6; line-height: 1.55; margin: 8px 0; }
+  .row { display: flex; align-items: center; gap: 10px; margin-top: 20px;
+    flex-wrap: wrap; }
+  .pill {
+    background: #0b0d12; padding: 8px 12px; border-radius: 999px;
+    font-size: 13px; color: #c1cbd9;
+    max-width: 100%; overflow-wrap: anywhere;
+  }
+  .pill.ok { color: #53d49a; }
+  button, a.btn {
+    background: #53d49a; color: #08110b; border: 0;
+    padding: 10px 18px; font-weight: 600; border-radius: 8px;
+    cursor: pointer; text-decoration: none; display: inline-block;
+    font-size: 14px;
+  }
+  .btn-secondary {
+    background: #2a2f3a; color: #e8eaed;
+  }
+  .muted { font-size: 12px; color: #7a8497; margin-top: 16px; }
+  #step { display: none; }
+  #step.shown { display: block; }
+  .logout-row { margin-top: 16px; }
+  .logout-form { display: inline; margin: 0; }
+  button.logout {
+    background: none; color: #8a93a4; border: 1px solid #2a2f3a;
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer;
+  }
+  button.logout:hover { color: #fca5a5; border-color: #5c2630; }
+  @media (max-width: 480px) {
+    .card { padding: 22px 18px; border-radius: 10px; }
+    h1 { font-size: 19px; }
+    .row { gap: 8px; margin-top: 16px; }
+    .pill { font-size: 12.5px; padding: 7px 11px; }
+    /* The primary CTA reads better as a full-width tap target on phones. */
+    #link-kick, #link-kick-2,
+    #step-discord form > button { display: block; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Link your Kick account</h1>
+  <p>This lets the server check your relationship to a Kick channel (follower, subscriber, VIP, etc.) so it can grant Discord roles automatically.</p>
+
+  <div id="step-loading">
+    <p class="muted">Loading…</p>
+  </div>
+
+  <div id="step-discord" style="display:none">
+    <div class="row">
+      <span class="pill">1. Sign in with Discord</span>
+    </div>
+    <p>You'll be sent to the Discord login. Approve once and you'll come back here.</p>
+    <form method="post" action="{{BASE_URL}}/verify/login" style="margin-top:14px">
+      <button type="submit">Sign in with Discord</button>
+    </form>
+  </div>
+
+  <div id="step-kick" style="display:none">
+    <div class="row">
+      <span class="pill ok">&#10003; Signed in as <span id="discord-name"></span></span>
+    </div>
+    <p style="margin-top:14px">Now link your Kick account.</p>
+    <button id="link-kick">Link Kick account</button>
+    <div class="logout-row">
+      <form class="logout-form" method="POST" action="/auth/logout">
+        <button type="submit" class="logout">Sign out of Discord</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="step-done" style="display:none">
+    <div class="row">
+      <span class="pill ok">&#10003; Discord: <span id="discord-name-2"></span></span>
+      <span class="pill ok">&#10003; Kick: <span id="kick-name"></span></span>
+    </div>
+    <p>You're all set. Role assignments refresh automatically — give it up to a minute after subscribing / following.</p>
+    <p class="muted">Need to switch Kick accounts? Click below — re-linking overrides the old one.</p>
+    <button id="link-kick-2" class="btn-secondary">Re-link Kick</button>
+    <div class="logout-row">
+      <form class="logout-form" method="POST" action="/auth/logout">
+        <button type="submit" class="logout">Sign out of Discord</button>
+      </form>
+    </div>
+  </div>
+
+  <p class="muted">We only ask Kick for your basic profile. The server checks your relationship to specific channels using the broadcaster's own access — your token never sees other people's data.</p>
+</div>
+
+<script>
+const API = "{{BASE_URL}}";
+
+async function refresh() {
+  const r = await fetch(API + '/verify/status', { credentials: 'include', cache: 'no-store' });
+  const data = await r.json();
+
+  document.getElementById('step-loading').style.display = 'none';
+  document.getElementById('step-discord').style.display = 'none';
+  document.getElementById('step-kick').style.display = 'none';
+  document.getElementById('step-done').style.display = 'none';
+
+  if (!data.signed_in_discord) {
+    document.getElementById('step-discord').style.display = 'block';
+    return;
+  }
+  document.getElementById('discord-name').textContent = data.discord_username || '';
+  document.getElementById('discord-name-2').textContent = data.discord_username || '';
+  if (!data.linked_kick) {
+    document.getElementById('step-kick').style.display = 'block';
+    return;
+  }
+  document.getElementById('kick-name').textContent = data.kick_username || '';
+  document.getElementById('step-done').style.display = 'block';
+}
+
+async function startKickFlow() {
+  const r = await fetch(API + '/verify/kick', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: 'unknown' }));
+    alert('Could not start Kick link: ' + (err.error || r.status));
+    return;
+  }
+  const data = await r.json();
+  window.location.href = data.authorize_url;
+}
+
+document.getElementById('link-kick').addEventListener('click', startKickFlow);
+document.getElementById('link-kick-2').addEventListener('click', startKickFlow);
+
+// Logout forms POST to the Auth Gateway on the same origin as BASE_URL,
+// with return_to pointing back to /verify so the user lands here signed-out.
+(function wireLogout(){
+  const u = new URL(API);
+  const action = u.origin + '/auth/logout?return_to=' + encodeURIComponent(u.pathname + '/verify');
+  document.querySelectorAll('form.logout-form').forEach(f => { f.action = action; });
+})();
+
+refresh();
+</script>
+</body>
+</html>

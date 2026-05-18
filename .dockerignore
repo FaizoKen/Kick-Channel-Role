@@ -1,0 +1,47 @@
+# Mirror .gitignore + extra build-context exclusions. Anything COPY'd by the
+# Dockerfile must still pass through this filter, so removing entries here can
+# silently bloat the image or smuggle secrets into it.
+
+# Rust build artifacts (largest single offender for build context)
+target/
+**/*.rs.bk
+
+# Secrets — must never enter the build context
+.env
+.env.*
+!.env.example
+
+# VCS metadata
+.git/
+.gitignore
+.gitattributes
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.iml
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Docker volumes / local data
+pgdata/
+backups/
+private/
+
+# Tooling / dev caches
+.claude/
+node_modules/
+coverage/
+
+# Docs not needed in the image
+*.md
+!README.md
+LICENSE.txt
+
+# Local compose overrides
+docker-compose.override.yml
+compose.override.yml
