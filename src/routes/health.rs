@@ -30,11 +30,8 @@ pub async fn favicon() -> impl IntoResponse {
 /// reachability, not authorization.
 async fn check_service(http: &reqwest::Client, name: &str, url: &str) -> Value {
     let start = std::time::Instant::now();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        http.get(url).send(),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(3), http.get(url).send()).await;
     let latency = start.elapsed().as_millis() as u64;
 
     let is_up = matches!(result, Ok(Ok(_)));

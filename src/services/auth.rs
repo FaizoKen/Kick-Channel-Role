@@ -39,11 +39,7 @@ struct GuildPermissionResp {
 /// (the "sometimes the users page doesn't work" symptom). Mirrors
 /// `Genshin-Player-Role/src/routes/players.rs::auth_gateway_get` and
 /// BLUEPRINT §16.5.
-fn classify_gateway_status(
-    status: reqwest::StatusCode,
-    body: &str,
-    gateway_url: &str,
-) -> AppError {
+fn classify_gateway_status(status: reqwest::StatusCode, body: &str, gateway_url: &str) -> AppError {
     if status == reqwest::StatusCode::UNAUTHORIZED {
         AppError::UnauthorizedWith(format!(
             "The Auth Gateway rejected your session ({status}). Please sign in again."

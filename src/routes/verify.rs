@@ -163,4 +163,3 @@ fn build_authorize(
     .expect("urlencoded never fails for &str");
     format!("{}?{}", kick::AUTHORIZE_URL, qs)
 }
-

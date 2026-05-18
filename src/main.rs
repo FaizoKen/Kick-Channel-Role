@@ -173,8 +173,7 @@ async fn main() {
         )
         .route(
             "/admin/{guild_id}/role/{role_id}/preview",
-            get(routes::admin::role_config_preview)
-                .post(routes::admin::role_config_preview_edit),
+            get(routes::admin::role_config_preview).post(routes::admin::role_config_preview_edit),
         )
         // Kick OAuth callbacks
         .route(

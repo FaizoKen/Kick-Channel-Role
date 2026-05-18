@@ -736,13 +736,7 @@ pub async fn role_config_preview_edit(
     }
 
     let parsed = rule_validator::parse_rule_tree(body)?;
-    preview_count_for(
-        &state,
-        &guild_id,
-        parsed.kick_channel_id,
-        &parsed.rule_tree,
-    )
-    .await
+    preview_count_for(&state, &guild_id, parsed.kick_channel_id, &parsed.rule_tree).await
 }
 
 /// Shared core for GET (saved tree) and POST (proposed tree) previews.
