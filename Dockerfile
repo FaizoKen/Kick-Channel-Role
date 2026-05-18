@@ -15,6 +15,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
 # Cargo.toml, so no explicit `strip` invocation is needed here.
 COPY src/ src/
 COPY migrations/ migrations/
+COPY templates/ templates/
 COPY favicon.ico ./
 RUN cargo build --release
 
