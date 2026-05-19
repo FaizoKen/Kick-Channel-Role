@@ -100,7 +100,6 @@
   .count { color:#8a93a4; font-size:12.5px; }
   .count .ok { color:#53d49a; font-weight:600; }
   .toast { padding:10px 12px; border-radius:8px; font-size:13px; margin-top:12px; }
-  .toast.s { background:#13211b; border:1px solid #2c5c44; color:#9be7c4; }
   .toast.e { background:#2a1518; border:1px solid #5c2630; color:#f6b8c0; }
   .hidden { display:none !important; }
   /* Mobile / narrow iframe (Discord on a phone embeds this at ~360 px). */
@@ -381,8 +380,7 @@ function render(){
         <button id="preview">Preview</button>
         <button id="save" class="primary" ${dirty?'':'disabled'}>Save</button>
       </div>
-    </div>
-    <div id="msg"></div>`;
+    </div>`;
 
   app.querySelectorAll('input[name=who]').forEach(r=>r.addEventListener('change',()=>choose(r.value)));
   const cc=document.getElementById('connect'); if(cc) cc.addEventListener('click',connectChannel);
@@ -431,7 +429,7 @@ function renderRule(){
   box.querySelectorAll('[data-dg]').forEach(b=>b.onclick=()=>{ cfg.groups.splice(+b.dataset.dg,1); recomputeDirty(); renderRule(); postHeight(); });
   box.querySelectorAll('[data-ac]').forEach(b=>b.onclick=()=>{ cfg.groups[+b.dataset.ac].conditions.push(c(state.targets[0].key,'eq',true)); recomputeDirty(); renderRule(); postHeight(); });
   const ag=document.getElementById('ag'); if(ag) ag.onclick=()=>{
-    if(cfg.groups.length>=state.limits.max_groups){ flash(`Max ${state.limits.max_groups} groups.`,true); return; }
+    if(cfg.groups.length>=state.limits.max_groups){ postToast(`Max ${state.limits.max_groups} groups.`); return; }
     cfg.groups.push({conditions:[c(state.targets[0].key,'eq',true)]}); recomputeDirty(); renderRule(); postHeight(); };
   box.querySelectorAll('[data-cond]').forEach(wireCond);
 }
@@ -472,8 +470,6 @@ function wireCond(row){
     recomputeDirty(); renderRule(); postHeight(); };
 }
 
-function flash(m,err){ document.getElementById('msg').innerHTML=`<div class="toast ${err?'e':'s'}">${esc(m)}</div>`; postHeight(); }
-
 async function setViewPerm(next){
   const prev=(state.users&&state.users.view_permission)||'managers';
   if(next===prev) return;
@@ -486,8 +482,7 @@ async function setViewPerm(next){
        body:JSON.stringify({view_permission:next})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok){ state.users.view_permission=prev; render();
-      flash(d.error||'Could not update users-page access.',true);
-      postToast(d.error||'Update failed'); return; }
+      postToast(d.error||'Could not update users-page access.'); return; }
     // Re-render in case a focus-triggered refreshFromServer raced the POST
     // and saw stale data. supPending blocked it from writing, but only if it
     // was still in-flight; this render ensures the radios reflect the truth.
@@ -497,7 +492,7 @@ async function setViewPerm(next){
       clearTimeout(setViewPerm._t);
       setViewPerm._t=setTimeout(()=>pill.classList.remove('show'),1800); }
   }catch(e){ state.users.view_permission=prev; render();
-    flash('Network error: '+e,true); }
+    postToast('Network error: '+e); }
   finally{ supPending=false; }
 }
 async function connectChannel(){
@@ -505,10 +500,10 @@ async function connectChannel(){
     const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/broadcasters/connect`,
       {method:'POST',headers:apiHeaders(),credentials:apiCreds()});
     const d=await r.json();
-    if(!r.ok){ flash(d.error||'Could not start Kick connect.',true); postToast(d.error||'connect failed'); return; }
+    if(!r.ok){ postToast(d.error||'Could not start Kick connect.'); return; }
     window.open(d.authorize_url,'_blank','noopener');
-    flash('Kick opened in a new tab. Approve it, then return here — this page refreshes itself.',false);
-  }catch(e){ flash('Connect error: '+e,true); }
+    postToast('Kick opened in a new tab. Approve it, then return here — this page refreshes itself.','success');
+  }catch(e){ postToast('Connect error: '+e); }
 }
 async function doPreview(){
   const el=document.getElementById('count'); if(!el) return;
@@ -537,12 +532,11 @@ async function doPreviewEdit(){
     const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/role/${ROLE_ID}/preview`,
       {method:'POST',headers:apiHeaders(),credentials:apiCreds(),body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ flash(d.error||('Preview failed (HTTP '+r.status+')'),true);
-      postToast(d.error||'Preview failed'); return; }
+    if(!r.ok){ postToast(d.error||('Preview failed (HTTP '+r.status+')')); return; }
     if(d.available===false){ el.textContent=d.reason||'Preview unavailable.'; postHeight(); return; }
     el.innerHTML=`<span class="ok">${d.matching}</span> of ${d.linked} linked member(s) match`
       +(dirty?` · <span style="color:#fbbf24">Preview of unsaved rule</span>`:``);
-  }catch(e){ flash('Network error: '+e,true); }
+  }catch(e){ postToast('Network error: '+e); }
   finally{ btn.disabled=false; btn.textContent=orig; postHeight(); }
 }
 async function doSave(){
@@ -554,9 +548,8 @@ async function doSave(){
   // the dashboard so the admin sees why "Save" did nothing. Same condition
   // the backend enforces, so the two never disagree.
   if(!cfg.grant_on_any_relation && (cfg.groups||[]).length>0 && !cfg.kick_channel_id){
-    flash('Pick the Kick channel this rule checks against before saving — '
-      +'without a connected channel it grants the role to nobody.',true);
-    postToast('Pick a Kick channel before saving — this rule grants to nobody without one.');
+    postToast('Pick the Kick channel this rule checks against before saving — '
+      +'without a connected channel it grants the role to nobody.');
     return;
   }
   const payload={ rule_tree_version:state.rule_tree_version,
@@ -566,13 +559,13 @@ async function doSave(){
     const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/role/${ROLE_ID}/save`,
       {method:'POST',headers:apiHeaders(),credentials:apiCreds(),body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
-    if(r.status===409){ flash('Changed in another tab. Reload to get the latest, then re-apply.',true); postToast('Reload needed'); return; }
-    if(!r.ok){ flash(d.error||('Save failed (HTTP '+r.status+')'),true); postToast(d.error||'Save failed'); return; }
+    if(r.status===409){ postToast('Changed in another tab. Reload to get the latest, then re-apply.'); return; }
+    if(!r.ok){ postToast(d.error||('Save failed (HTTP '+r.status+')')); return; }
     state.rule_tree_version=d.rule_tree_version; state.config=JSON.parse(JSON.stringify(cfg));
     setDirty(false); postSaved();
-    flash('Saved ✓  Roles update within a minute. Make sure members link Kick using the link above.',false);
+    postToast('Saved ✓  Roles update within a minute. Make sure members link Kick using the link above.','success');
     autoPreview();
-  }catch(e){ flash('Network error: '+e,true); postToast('Network error'); }
+  }catch(e){ postToast('Network error: '+e); }
 }
 
 async function refreshFromServer(){
