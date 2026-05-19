@@ -89,12 +89,11 @@ pub async fn verify_unlink(
     // now-orphaned per-channel relation rows. `channel_relations` is keyed by
     // `kick_user_id` with no FK to `kick_users`, so nothing cascades — we
     // must clean it explicitly or a re-link would inherit stale facts.
-    let removed: Option<(i64,)> = sqlx::query_as(
-        "DELETE FROM kick_users WHERE discord_id = $1 RETURNING kick_user_id",
-    )
-    .bind(&discord_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let removed: Option<(i64,)> =
+        sqlx::query_as("DELETE FROM kick_users WHERE discord_id = $1 RETURNING kick_user_id")
+            .bind(&discord_id)
+            .fetch_optional(&state.pool)
+            .await?;
 
     let Some((kick_user_id,)) = removed else {
         return Err(AppError::NotFound(
