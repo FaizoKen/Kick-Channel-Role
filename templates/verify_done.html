@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Linked! — Kick Channel Role</title>
+  <link rel="icon" href="{{BASE_URL}}/favicon.ico">
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #161a23;
+      --border: #2a2f3a;
+      --text: #e8eaed;
+      --muted: #9aa3b2;
+      --accent: #53d49a; /* Kick green */
+      --accent-hover: #6fe0ae;
+      --success: #58e1a2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      margin: 0; padding: 48px 24px; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 14px; padding: 32px 28px; max-width: 460px; width: 100%;
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 56px; height: 56px; border-radius: 14px;
+      background: rgba(88, 225, 162, .15); color: var(--success);
+      font-size: 30px; margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; }
+    p { margin: 8px 0; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
+    .name {
+      color: var(--text); font-weight: 600;
+      background: rgba(83, 212, 154, 0.12);
+      padding: 2px 8px; border-radius: 6px;
+    }
+    a.btn {
+      display: inline-block; margin-top: 20px;
+      background: var(--accent); color: #08110b; text-decoration: none;
+      padding: 11px 22px; border-radius: 8px; font-weight: 600;
+      transition: background 0.15s;
+    }
+    a.btn:hover { background: var(--accent-hover); }
+    .small { margin-top: 18px; color: #6a7385; font-size: 12px; }
+    .small a { color: #8a93a4; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">&#10003;</div>
+    <h1>You're linked!</h1>
+    <p>
+      <span class="name">{{KICK_USERNAME}}</span>
+      is now connected to your Discord account.
+    </p>
+    <p>Roles you qualify for arrive within a minute — give it time after subscribing / following. You can close this tab.</p>
+    <a class="btn" href="{{BASE_URL}}/verify">Back to verification page</a>
+    <p class="small">Kick user ID: {{KICK_USER_ID}} &middot;
+       <a href="https://kick.com/{{KICK_SLUG}}" target="_blank" rel="noopener">View profile</a>
+    </p>
+  </div>
+</body>
+</html>

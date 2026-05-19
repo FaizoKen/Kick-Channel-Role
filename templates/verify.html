@@ -175,9 +175,13 @@ function renderStatus(s) {
     stepK.classList.remove('active');
     kStatus.classList.add('linked');
     const uname = s.kick_username || '';
+    // Kick's public profile URL uses the channel slug (lowercase, `_`→`-`),
+    // not the display name — e.g. "Faizo_Ken" → kick.com/faizo-ken. /verify/status
+    // doesn't carry the slug, so normalize the same way the link callback does.
+    const slug = uname.toLowerCase().replace(/_/g, '-');
     kStatus.innerHTML = 'Linked to Kick account <strong>' +
       escapeHtml(uname) + '</strong> (' +
-      '<a href="https://kick.com/' + encodeURIComponent(uname) +
+      '<a href="https://kick.com/' + encodeURIComponent(slug) +
       '" target="_blank" rel="noopener">view profile</a>)';
     kBtn.textContent = 'Re-link a different Kick account';
     kBtn.disabled = false;

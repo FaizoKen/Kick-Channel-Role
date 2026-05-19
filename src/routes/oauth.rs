@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Redirect};
+use axum::response::IntoResponse;
 use axum_extra::extract::cookie::CookieJar;
 use bytes::Bytes;
 use serde::Deserialize;
@@ -21,6 +21,11 @@ use crate::services::kick::KickClient;
 use crate::AppState;
 
 const SUCCESS_PAGE: &str = include_str!("../../templates/oauth_done.html");
+/// Viewer post-link success page. The broadcaster connect flow uses
+/// `SUCCESS_PAGE` (an admin popup that auto-closes); the viewer link flow
+/// is a normal top-level navigation, so it gets its own "You're linked!"
+/// page with a button back to /verify.
+const VIEWER_DONE_PAGE: &str = include_str!("../../templates/verify_done.html");
 
 /// Kick user IDs below this cutoff are treated as "OG" (early-adopter badge).
 /// The exact threshold is community-set; configurable later via env if needed.
@@ -345,7 +350,12 @@ pub async fn viewer_callback(
     Query(q): Query<CallbackQuery>,
 ) -> impl IntoResponse {
     match viewer_callback_inner(state, jar, q).await {
-        Ok(redirect) => redirect.into_response(),
+        Ok(html) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -354,7 +364,7 @@ async fn viewer_callback_inner(
     state: Arc<AppState>,
     jar: CookieJar,
     q: CallbackQuery,
-) -> Result<Redirect, AppError> {
+) -> Result<Bytes, AppError> {
     if let Some(err) = q.error {
         let desc = q.error_description.unwrap_or_default();
         return Err(AppError::BadRequest(format!(
@@ -391,6 +401,18 @@ async fn viewer_callback_inner(
         .exchange_code(&code, &redirect_uri, &row.code_verifier)
         .await?;
     let user = client.get_authenticated_user(&tokens.access_token).await?;
+
+    // The public Kick profile URL uses the channel *slug* (lowercase, with
+    // `_` → `-`), not the display name — e.g. "Faizo_Ken" lives at
+    // kick.com/faizo-ken, and linking to the display name hits Kick's
+    // "Oops" page. Fetch the canonical slug best-effort (same call the
+    // broadcaster flow uses); fall back to a normalized display name.
+    let kick_slug = client
+        .get_channel_by_user(user.user_id, &tokens.access_token)
+        .await
+        .ok()
+        .map(|c| c.slug)
+        .unwrap_or_else(|| user.name.to_ascii_lowercase().replace('_', "-"));
 
     // We do NOT persist the viewer's tokens — per-channel facts come from the
     // broadcaster's token. All we need is the Kick user_id to bind the link.
@@ -497,7 +519,13 @@ async fn viewer_callback_inner(
         "Viewer linked"
     );
 
-    // Bounce back to /verify — the page reads /verify/status and renders the
-    // "linked" view itself, so no separate success template is needed.
-    Ok(Redirect::to(&format!("{}/verify", state.config.base_url)))
+    // Render the viewer "You're linked!" success page. It has a button back
+    // to /verify, which reads /verify/status and shows the linked state if
+    // the user returns there.
+    let html = VIEWER_DONE_PAGE
+        .replace("{{BASE_URL}}", &state.config.base_url)
+        .replace("{{KICK_USERNAME}}", &user.name)
+        .replace("{{KICK_SLUG}}", &kick_slug)
+        .replace("{{KICK_USER_ID}}", &user.user_id.to_string());
+    Ok(Bytes::from(html))
 }
