@@ -765,13 +765,18 @@ async fn preview_count_for(
     channel_id: Option<i64>,
     tree: &RuleTree,
 ) -> Result<Json<Value>, AppError> {
-    let nobody = channel_id.is_none() || (!tree.grant_on_any_relation && tree.groups.is_empty());
+    // Mirror the sync engine's Convention-42 guard (services::sync): a rule
+    // grants to nobody only when it is NOT channel-agnostic AND it has no
+    // channel bound or no groups. `grant_on_any_relation` is channel-agnostic,
+    // so the default "Anyone who linked their Kick" preset (which carries no
+    // channel) must NOT short-circuit here — it matches every linked member.
+    let nobody =
+        !tree.grant_on_any_relation && (channel_id.is_none() || tree.groups.is_empty());
     if nobody {
         return Ok(Json(
             json!({ "matching": 0, "linked": 0, "available": true }),
         ));
     }
-    let channel_id = channel_id.unwrap();
 
     let member_ids = match auth_gateway::fetch_guild_member_ids(
         &state.http,
@@ -800,6 +805,21 @@ async fn preview_count_for(
             .bind(&member_ids)
             .fetch_one(&state.pool)
             .await?;
+
+    // Channel-agnostic "anyone who linked Kick" rule: every linked member
+    // qualifies, so matching == linked. No channel join (mirrors
+    // services::sync, which counts kick_users directly for this case).
+    if tree.grant_on_any_relation {
+        return Ok(Json(json!({
+            "available": true,
+            "matching": linked,
+            "linked": linked,
+        })));
+    }
+
+    // Channel-scoped rule. The `nobody` guard above guarantees a channel is
+    // bound and at least one group exists for this path.
+    let channel_id = channel_id.expect("channel bound for non-grant preview");
 
     let (rule_where, binds) = rule_sql::build_rule_where(tree, 2);
     let query = format!(
