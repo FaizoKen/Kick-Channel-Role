@@ -1,190 +1,257 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Link your Kick account</title>
-<link rel="icon" href="{{BASE_URL}}/favicon.ico">
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    background: #0f1115; color: #e8eaed; margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-    min-height: 100vh;
-    display: flex; align-items: center; justify-content: center;
-    padding: 20px 16px;
-  }
-  .card {
-    width: 100%; max-width: 480px; padding: 32px 28px; background: #1a1d24;
-    border: 1px solid #2a2f3a; border-radius: 12px;
-  }
-  h1 { margin: 0 0 12px; font-size: 22px; }
-  p { color: #b8bcc6; line-height: 1.55; margin: 8px 0; }
-  .row { display: flex; align-items: center; gap: 10px; margin-top: 20px;
-    flex-wrap: wrap; }
-  .pill {
-    background: #0b0d12; padding: 8px 12px; border-radius: 999px;
-    font-size: 13px; color: #c1cbd9;
-    max-width: 100%; overflow-wrap: anywhere;
-  }
-  .pill.ok { color: #53d49a; }
-  button, a.btn {
-    background: #53d49a; color: #08110b; border: 0;
-    padding: 10px 18px; font-weight: 600; border-radius: 8px;
-    cursor: pointer; text-decoration: none; display: inline-block;
-    font-size: 14px;
-  }
-  .btn-secondary {
-    background: #2a2f3a; color: #e8eaed;
-  }
-  .btn-danger {
-    background: #3a2030; color: #fca5a5; margin-left: 8px;
-  }
-  .btn-danger:hover { background: #4a2636; }
-  .muted { font-size: 12px; color: #7a8497; margin-top: 16px; }
-  #step { display: none; }
-  #step.shown { display: block; }
-  .logout-row { margin-top: 16px; }
-  .logout-form { display: inline; margin: 0; }
-  button.logout {
-    background: none; color: #8a93a4; border: 1px solid #2a2f3a;
-    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
-    cursor: pointer;
-  }
-  button.logout:hover { color: #fca5a5; border-color: #5c2630; }
-  @media (max-width: 480px) {
-    .card { padding: 22px 18px; border-radius: 10px; }
-    h1 { font-size: 19px; }
-    .row { gap: 8px; margin-top: 16px; }
-    .pill { font-size: 12.5px; padding: 7px 11px; }
-    /* The primary CTA reads better as a full-width tap target on phones. */
-    #link-kick, #link-kick-2, #unlink-kick,
-    #step-discord form > button { display: block; width: 100%; }
-    .btn-danger { margin-left: 0; margin-top: 8px; }
-  }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Link your Kick account — Kick Channel Role</title>
+  <link rel="icon" href="{{BASE_URL}}/favicon.ico">
+  <style>
+    :root {
+      --bg: #0f1115; --card: #161a23; --border: #2a2f3a;
+      --text: #e8eaed; --muted: #9aa3b2;
+      --discord: #5865f2; --discord-hover: #4752c4;
+      --kick: #53d49a; --kick-hover: #6fe0ae;
+      --danger: #f87171; --success: #58e1a2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); margin: 0;
+      padding: 48px 24px; line-height: 1.55;
+    }
+    .wrap { max-width: 520px; margin: 0 auto; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    .tagline { color: var(--muted); margin: 0 0 28px; }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 22px; margin-bottom: 18px;
+    }
+    .step-head {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 8px; font-weight: 600;
+    }
+    .step-num {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: #2a2f3a; color: #cbd0db;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 13px;
+    }
+    .step.done .step-num { background: rgba(88,225,162,.2); color: var(--success); }
+    .step.active .step-num { background: rgba(83,212,154,.2); color: var(--kick); }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .status-line {
+      background: #0b0d12; border-radius: 8px;
+      padding: 10px 12px; font-size: 13px; color: var(--muted);
+      margin-bottom: 14px;
+    }
+    .status-line.linked { color: var(--success); }
+    button {
+      font-family: inherit; font-size: 14px; font-weight: 600;
+      padding: 11px 22px; border-radius: 8px; cursor: pointer;
+      border: 0; transition: background 0.15s;
+    }
+    button.discord { background: var(--discord); color: #fff; }
+    button.discord:hover { background: var(--discord-hover); }
+    button.kick { background: var(--kick); color: #08110b; }
+    button.kick:hover { background: var(--kick-hover); }
+    button.unlink {
+      background: transparent; color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    button.unlink:hover { color: var(--danger); border-color: #5c2630; }
+    button.switch {
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border);
+    }
+    button.switch:hover { border-color: var(--kick); color: var(--kick); }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .toast {
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+      background: var(--card); border: 1px solid var(--border);
+      padding: 10px 16px; border-radius: 8px; font-size: 13px;
+      color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.4);
+      display: none; max-width: 90vw;
+    }
+    .toast.show { display: block; }
+    .toast.error { border-color: var(--danger); color: var(--danger); }
+    .footer { color: #6a7385; font-size: 12px; margin-top: 26px; }
+    .footer a { color: #8a93a4; }
+  </style>
 </head>
 <body>
-<div class="card">
+<div class="wrap">
   <h1>Link your Kick account</h1>
-  <p>This lets the server check your relationship to a Kick channel (follower, subscriber, VIP, etc.) so it can grant Discord roles automatically.</p>
+  <p class="tagline">Two short steps. Your Discord roles update automatically as your channel relationship changes — give it up to a minute after subscribing / following.</p>
 
-  <div id="step-loading">
-    <p class="muted">Loading…</p>
-  </div>
-
-  <div id="step-discord" style="display:none">
-    <div class="row">
-      <span class="pill">1. Sign in with Discord</span>
-    </div>
-    <p>You'll be sent to the Discord login. Approve once and you'll come back here.</p>
-    <form method="post" action="{{BASE_URL}}/verify/login" style="margin-top:14px">
-      <button type="submit">Sign in with Discord</button>
+  <div class="card step" id="step-discord">
+    <div class="step-head"><span class="step-num">1</span> Sign in with Discord</div>
+    <div class="status-line" id="discord-status">Checking your session…</div>
+    <!-- Real form POSTs (top-level navigation). The Discord/OAuth redirect
+         chain is cross-origin, so fetch() can't follow it — the browser must.
+         "Switch account" = sign out of the Auth Gateway session, then land
+         back here signed-out to sign in as a different Discord account. -->
+    <form id="discord-login-form" method="post" action="{{BASE_URL}}/verify/login" style="display:none; margin:0;">
+      <button class="discord" type="submit">Sign in with Discord</button>
+    </form>
+    <form id="discord-switch-form" class="logout-form" method="POST" action="/auth/logout" style="display:none; margin:0;">
+      <button class="switch" type="submit">Switch account</button>
     </form>
   </div>
 
-  <div id="step-kick" style="display:none">
-    <div class="row">
-      <span class="pill ok">&#10003; Signed in as <span id="discord-name"></span></span>
-    </div>
-    <p style="margin-top:14px">Now link your Kick account.</p>
-    <button id="link-kick">Link Kick account</button>
-    <div class="logout-row">
-      <form class="logout-form" method="POST" action="/auth/logout">
-        <button type="submit" class="logout">Sign out of Discord</button>
-      </form>
-    </div>
+  <div class="card step" id="step-kick">
+    <div class="step-head"><span class="step-num">2</span> Connect Kick</div>
+    <div class="status-line" id="kick-status">…</div>
+    <button class="kick" id="kick-btn" type="button" disabled>Link Kick account</button>
+    <button class="unlink" id="unlink-btn" type="button" style="display:none; margin-left:8px;">Unlink</button>
   </div>
 
-  <div id="step-done" style="display:none">
-    <div class="row">
-      <span class="pill ok">&#10003; Discord: <span id="discord-name-2"></span></span>
-      <span class="pill ok">&#10003; Kick: <span id="kick-name"></span></span>
-    </div>
-    <p>You're all set. Role assignments refresh automatically — give it up to a minute after subscribing / following.</p>
-    <p class="muted">Need to switch Kick accounts? Click below — re-linking overrides the old one.</p>
-    <button id="link-kick-2" class="btn-secondary">Re-link Kick</button>
-    <button id="unlink-kick" class="btn-danger">Unlink Kick</button>
-    <div class="logout-row">
-      <form class="logout-form" method="POST" action="/auth/logout">
-        <button type="submit" class="logout">Sign out of Discord</button>
-      </form>
-    </div>
-  </div>
-
-  <p class="muted">We only ask Kick for your basic profile. The server checks your relationship to specific channels using the broadcaster's own access — your token never sees other people's data.</p>
+  <p class="footer">
+    This plugin reads only your Kick basic profile. The server checks your
+    relationship to specific channels (follower, subscriber, VIP, etc.) using
+    the broadcaster's own access — your token never sees other people's data.
+    &middot; <a href="https://kick.com" target="_blank" rel="noopener">kick.com</a>
+  </p>
 </div>
+<div class="toast" id="toast"></div>
 
 <script>
-const API = "{{BASE_URL}}";
+const BASE_URL = "{{BASE_URL}}";
 
-async function refresh() {
-  const r = await fetch(API + '/verify/status', { credentials: 'include', cache: 'no-store' });
-  const data = await r.json();
+const $ = (id) => document.getElementById(id);
+const toast = (msg, kind) => {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.toggle('error', kind === 'error');
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3200);
+};
 
-  document.getElementById('step-loading').style.display = 'none';
-  document.getElementById('step-discord').style.display = 'none';
-  document.getElementById('step-kick').style.display = 'none';
-  document.getElementById('step-done').style.display = 'none';
-
-  if (!data.signed_in_discord) {
-    document.getElementById('step-discord').style.display = 'block';
+async function loadStatus() {
+  const r = await fetch(BASE_URL + '/verify/status', { credentials: 'include', cache: 'no-store' });
+  if (!r.ok) {
+    toast('Could not load status', 'error');
     return;
   }
-  document.getElementById('discord-name').textContent = data.discord_username || '';
-  document.getElementById('discord-name-2').textContent = data.discord_username || '';
-  if (!data.linked_kick) {
-    document.getElementById('step-kick').style.display = 'block';
-    return;
-  }
-  document.getElementById('kick-name').textContent = data.kick_username || '';
-  document.getElementById('step-done').style.display = 'block';
+  const s = await r.json();
+  renderStatus(s);
 }
 
-async function startKickFlow() {
-  const r = await fetch(API + '/verify/kick', {
-    method: 'POST',
-    credentials: 'include',
+function renderStatus(s) {
+  const stepD = $('step-discord');
+  const stepK = $('step-kick');
+  const dStatus = $('discord-status');
+  const kStatus = $('kick-status');
+  const loginForm = $('discord-login-form');
+  const switchForm = $('discord-switch-form');
+  const kBtn = $('kick-btn');
+  const uBtn = $('unlink-btn');
+
+  // Step 1
+  if (s.signed_in_discord) {
+    stepD.classList.add('done');
+    stepD.classList.remove('active');
+    dStatus.classList.add('linked');
+    dStatus.textContent = 'Signed in as ' + (s.discord_username || 'unknown');
+    loginForm.style.display = 'none';
+    switchForm.style.display = '';
+  } else {
+    stepD.classList.add('active');
+    dStatus.classList.remove('linked');
+    dStatus.textContent = 'Not signed in. Click below.';
+    loginForm.style.display = '';
+    switchForm.style.display = 'none';
+  }
+
+  // Step 2
+  if (!s.signed_in_discord) {
+    kBtn.disabled = true;
+    uBtn.style.display = 'none';
+    kStatus.textContent = 'Sign in to Discord first.';
+    kStatus.classList.remove('linked');
+    return;
+  }
+  if (s.linked_kick) {
+    stepK.classList.add('done');
+    stepK.classList.remove('active');
+    kStatus.classList.add('linked');
+    const uname = s.kick_username || '';
+    kStatus.innerHTML = 'Linked to Kick account <strong>' +
+      escapeHtml(uname) + '</strong> (' +
+      '<a href="https://kick.com/' + encodeURIComponent(uname) +
+      '" target="_blank" rel="noopener">view profile</a>)';
+    kBtn.textContent = 'Re-link a different Kick account';
+    kBtn.disabled = false;
+    uBtn.style.display = '';
+  } else {
+    stepK.classList.add('active');
+    stepK.classList.remove('done');
+    kStatus.classList.remove('linked');
+    kStatus.textContent = 'No Kick account linked yet.';
+    kBtn.textContent = 'Link Kick account';
+    kBtn.disabled = false;
+    uBtn.style.display = 'none';
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => (
+    { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]
+  ));
+}
+
+// Sign-in is the #discord-login-form's native submit — no JS needed; the
+// browser navigates to /verify/login which 303-redirects through the
+// Discord OAuth chain and back.
+
+$('kick-btn').addEventListener('click', async () => {
+  $('kick-btn').disabled = true;
+  try {
+    const r = await fetch(BASE_URL + '/verify/kick', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      toast(data.error || 'Could not start Kick link', 'error');
+      $('kick-btn').disabled = false;
+      return;
+    }
+    location.href = data.authorize_url;
+  } catch (e) {
+    toast(String(e), 'error');
+    $('kick-btn').disabled = false;
+  }
+});
+
+$('unlink-btn').addEventListener('click', async () => {
+  if (!confirm('Unlink your Kick account from this Discord identity? Any roles it granted will be removed.')) return;
+  const r = await fetch(BASE_URL + '/verify/unlink', {
+    method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
   });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({ error: 'unknown' }));
-    alert('Could not start Kick link: ' + (err.error || r.status));
-    return;
+  if (r.ok) {
+    toast('Unlinked.');
+    loadStatus();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    toast(data.error || 'Could not unlink', 'error');
   }
-  const data = await r.json();
-  window.location.href = data.authorize_url;
-}
+});
 
-async function unlinkKick() {
-  if (!confirm('Unlink your Kick account? Any roles it granted will be removed.')) return;
-  const r = await fetch(API + '/verify/unlink', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({ error: 'unknown' }));
-    alert('Could not unlink: ' + (err.error || r.status));
-    return;
-  }
-  refresh();
-}
-
-document.getElementById('link-kick').addEventListener('click', startKickFlow);
-document.getElementById('link-kick-2').addEventListener('click', startKickFlow);
-document.getElementById('unlink-kick').addEventListener('click', unlinkKick);
-
-// Logout forms POST to the Auth Gateway on the same origin as BASE_URL,
-// with return_to pointing back to /verify so the user lands here signed-out.
-(function wireLogout(){
-  const u = new URL(API);
-  const action = u.origin + '/auth/logout?return_to=' + encodeURIComponent(u.pathname + '/verify');
+// The "Switch account" form signs out of the Auth Gateway session, which
+// is served on the same public origin as BASE_URL. Point it at the absolute
+// /auth/logout with a relative return_to back to this /verify page (the
+// gateway rejects non-relative return_to, so strip any trailing slash so a
+// host-root BASE_URL yields "/verify", not "//verify").
+(function wireLogout() {
+  const u = new URL(BASE_URL);
+  const path = u.pathname.replace(/\/+$/, '');
+  const action = u.origin + '/auth/logout?return_to=' +
+    encodeURIComponent(path + '/verify');
   document.querySelectorAll('form.logout-form').forEach(f => { f.action = action; });
 })();
 
-refresh();
+loadStatus();
 </script>
 </body>
 </html>
