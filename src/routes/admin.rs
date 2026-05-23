@@ -770,8 +770,7 @@ async fn preview_count_for(
     // channel bound or no groups. `grant_on_any_relation` is channel-agnostic,
     // so the default "Anyone who linked their Kick" preset (which carries no
     // channel) must NOT short-circuit here — it matches every linked member.
-    let nobody =
-        !tree.grant_on_any_relation && (channel_id.is_none() || tree.groups.is_empty());
+    let nobody = !tree.grant_on_any_relation && (channel_id.is_none() || tree.groups.is_empty());
     if nobody {
         return Ok(Json(
             json!({ "matching": 0, "linked": 0, "available": true }),
