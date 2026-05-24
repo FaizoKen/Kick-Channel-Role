@@ -557,6 +557,15 @@ pub async fn role_config_data(
             "max_groups": MAX_GROUPS,
             "max_conditions_per_group": MAX_CONDITIONS_PER_GROUP,
         },
+        // Per-guild verify URL. The `?guild=<id>` query param is what the
+        // verify page reads to (a) show "Verifying for <Server>" context and
+        // (b) auto-clear any existing opt-out so users who previously
+        // disabled this server are re-enrolled in one click — no detour
+        // through /auth/my_servers, no re-linking the Kick account.
+        //
+        // Guild IDs are Discord snowflakes (digits only) so they're safe to
+        // splice directly into the query string without percent-encoding.
+        "verify_url": format!("{}/verify?guild={}", state.config.base_url, guild_id),
         "users": {
             "url": format!("{}/users/{}", state.config.base_url, guild_id),
             "view_permission": view_permission,

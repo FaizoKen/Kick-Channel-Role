@@ -147,7 +147,6 @@
 <script>
 const BASE_URL="__BASE_URL__", GUILD_ID="__GUILD_ID__", ROLE_ID="__ROLE_ID__";
 const IFRAME_TOKEN="__IFRAME_TOKEN__", IS_EMBEDDED=!!IFRAME_TOKEN;
-const VERIFY_URL = BASE_URL + "/verify";
 
 function postToHost(m){ if(!IS_EMBEDDED) return; try{ parent.postMessage(m,'*'); }catch(_){} }
 function postHeight(){ postToHost({type:'rl:resize',height:Math.max(
@@ -288,6 +287,9 @@ function render(){
   const cfg=state._edit, app=document.getElementById('app');
   const chans=state.channels||[];
   const cur=state._preset, showChan=needsChannel(cur);
+  // Per-guild verify URL from the data endpoint (`?guild=<id>` query string)
+  // lets the verify page auto-clear any opt-out for this server.
+  const verifyUrl=state.verify_url||(BASE_URL+"/verify");
   // No channel picker any more: a relation rule auto-binds to the most
   // recently connected channel (state.channels is ordered connected_at DESC).
   // The admin changes the active channel by connecting a different one.
@@ -369,8 +371,8 @@ function render(){
     ${chanBlk}
     <div class="share"><b>One thing your members must do:</b> they have to link their
       Kick account once, here — until they do, they won't get the role even if they qualify.
-      <div class="copybox"><code id="vurl">${esc(VERIFY_URL)}</code>
-        <a class="btn-open" href="${esc(VERIFY_URL)}" target="_blank" rel="noopener noreferrer">Open</a>
+      <div class="copybox"><code id="vurl">${esc(verifyUrl)}</code>
+        <a class="btn-open" href="${esc(verifyUrl)}" target="_blank" rel="noopener noreferrer">Open</a>
         <button id="copy">Copy link</button></div>
     </div>
     ${usersBlk}
@@ -384,7 +386,7 @@ function render(){
 
   app.querySelectorAll('input[name=who]').forEach(r=>r.addEventListener('change',()=>choose(r.value)));
   const cc=document.getElementById('connect'); if(cc) cc.addEventListener('click',connectChannel);
-  wireCopy('copy', VERIFY_URL);
+  wireCopy('copy', verifyUrl);
   wireCopy('copysup', sup.url);
   app.querySelectorAll('input[name=vp]').forEach(r=>r.addEventListener('change',()=>setViewPerm(r.value)));
   const ln=document.getElementById('loyaln'); if(ln) ln.addEventListener('input',e=>{

@@ -14,6 +14,12 @@ use serde::Deserialize;
 
 use crate::error::AppError;
 
+/// Plugin slug sent to the Auth Gateway. Must match the URL prefix this
+/// plugin is mounted under (`/kick-channel-role`) and the entry in the
+/// gateway's plugin registry. The gateway uses this to scope the user's
+/// per-(plugin × server) opt-outs when filtering guild lists.
+const PLUGIN_SLUG: &str = "kick-channel-role";
+
 #[derive(Debug, Deserialize)]
 struct UserGuildIdsResponse {
     guild_ids: Vec<String>,
@@ -36,7 +42,9 @@ pub async fn fetch_user_guild_ids(
     let resp = http
         .get(&url)
         .header("X-Internal-Key", key)
-        .query(&[("discord_id", discord_id)])
+        // `plugin` scopes the response to this plugin's opt-out preferences
+        // so guilds where the user disabled this plugin are excluded.
+        .query(&[("discord_id", discord_id), ("plugin", PLUGIN_SLUG)])
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("auth_gateway request failed: {e}")))?;
@@ -79,7 +87,10 @@ pub async fn fetch_guild_member_ids_full(
     let resp = http
         .get(&url)
         .header("X-Internal-Key", key)
-        .query(&[("guild_id", guild_id)])
+        // `plugin` excludes members who have opted out of this plugin in
+        // this guild, so the atomic role replacement on the next sync
+        // drops their role on Discord's side too.
+        .query(&[("guild_id", guild_id), ("plugin", PLUGIN_SLUG)])
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("auth_gateway request failed: {e}")))?;

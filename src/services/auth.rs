@@ -258,8 +258,11 @@ pub async fn guild_members(
         })
         .unwrap_or_default();
 
+    // `plugin` filters out members who opted out of this plugin (or the
+    // whole guild), so the public list and any downstream JOIN against
+    // `kick_users` naturally excludes them.
     let url = format!(
-        "{}/auth/guild_members?guild_id={guild_id}",
+        "{}/auth/guild_members?guild_id={guild_id}&plugin=kick-channel-role",
         state.config.auth_gateway_url
     );
     let resp = state

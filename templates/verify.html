@@ -76,12 +76,30 @@
     .toast.error { border-color: var(--danger); color: var(--danger); }
     .footer { color: #6a7385; font-size: 12px; margin-top: 26px; }
     .footer a { color: #8a93a4; }
+    .guild-ctx { display: none; align-items: center; gap: 10px;
+      background: #0f2a1a; border: 1px solid #1f5836; color: #7fe0b0;
+      padding: 9px 13px; border-radius: 9px; margin: 0 0 18px;
+      font-size: 13px; line-height: 1.5; }
+    .guild-ctx.show { display: flex; }
+    .guild-ctx.warn { background: #2a1c08; border-color: #5a3a0e; color: #fbbf24; }
+    .guild-ctx .gctx-icon { flex-shrink: 0; }
+    .guild-ctx .gctx-name { color: #fff; font-weight: 600; }
+    .manage-link { font-size: 13px; color: var(--muted); margin: 14px 0 0; }
+    .manage-link a { color: #9fb6ff; }
   </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Link your Kick account</h1>
   <p class="tagline">Two short steps. Your Discord roles update automatically as your channel relationship changes — give it up to a minute after subscribing / following.</p>
+
+  <!-- Server context banner: only shown when ?guild=<id> is present in the URL.
+       Lets a server admin share a per-guild verify link that both links the
+       Kick account AND auto-enables the role for that specific server. -->
+  <div id="guild-ctx" class="guild-ctx">
+    <svg class="gctx-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    <span id="guild-ctx-text"></span>
+  </div>
 
   <div class="card step" id="step-discord">
     <div class="step-head"><span class="step-num">1</span> Sign in with Discord</div>
@@ -103,6 +121,10 @@
     <div class="status-line" id="kick-status">…</div>
     <button class="kick" id="kick-btn" type="button" disabled>Link Kick account</button>
     <button class="unlink" id="unlink-btn" type="button" style="display:none; margin-left:8px;">Unlink</button>
+    <p class="manage-link" id="manage-link" style="display:none;">
+      Getting Kick roles in servers you didn't intend?
+      <a href="/auth/my_servers?from=/kick-channel-role/verify">Choose which servers receive roles →</a>
+    </p>
   </div>
 
   <p class="footer">
@@ -116,6 +138,7 @@
 
 <script>
 const BASE_URL = "{{BASE_URL}}";
+const PLUGIN_SLUG = "kick-channel-role";
 
 const $ = (id) => document.getElementById(id);
 const toast = (msg, kind) => {
@@ -125,6 +148,112 @@ const toast = (msg, kind) => {
   el.classList.add('show');
   setTimeout(() => el.classList.remove('show'), 3200);
 };
+
+// Optional ?guild=<id> tells us the user came from a per-guild verify
+// link an admin shared in their Discord. We use it to (a) show a
+// contextual banner so the user knows which server this is for and
+// (b) automatically clear any existing opt-out (both per-plugin and
+// the guild-wide master) once they're authenticated — so a returning
+// user who'd previously disabled this server doesn't have to find
+// /auth/my_servers to re-enable it.
+const guildId = (() => {
+  try {
+    const v = new URLSearchParams(window.location.search).get('guild');
+    return v && /^[0-9]{5,25}$/.test(v) ? v : '';
+  } catch (e) { return ''; }
+})();
+
+// Preserve the guild context across the Discord OAuth round-trip so
+// an unauth visitor who logs in lands back on this same per-guild URL.
+// The page's normal flow POSTs to /verify/login which redirects to the
+// gateway with a hardcoded return_to — when ?guild= is present we
+// bypass that and navigate directly to /auth/login ourselves.
+(function patchLoginForm() {
+  if (!guildId) return;
+  const form = document.getElementById('discord-login-form');
+  if (!form) return;
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const u = new URL(BASE_URL);
+    const returnTo = u.pathname.replace(/\/+$/, '') + '/verify?guild=' + encodeURIComponent(guildId);
+    location.href = u.origin + '/auth/login?return_to=' + encodeURIComponent(returnTo);
+  });
+})();
+
+// Gateway-absolute API helper for /auth/* (cookie-authed via the shared
+// rl_session). Doesn't prefix with the plugin's base_url.
+async function gatewayApi(method, path, body) {
+  const u = new URL(BASE_URL);
+  const opts = { method, headers: {}, credentials: 'include' };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(u.origin + path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+function showGuildCtx(html, isWarning) {
+  const el = document.getElementById('guild-ctx');
+  document.getElementById('guild-ctx-text').innerHTML = html;
+  el.classList.toggle('warn', !!isWarning);
+  el.classList.add('show');
+}
+
+// Resolve guildId → display name via the gateway, then clear any opt-out
+// blocking this plugin from assigning roles in that server. Idempotent:
+// clearing rows that don't exist is a no-op on the server.
+async function applyGuildContext(isLinked) {
+  if (!guildId) return;
+  let prefs;
+  try {
+    prefs = await gatewayApi('GET', '/auth/preferences');
+  } catch (e) {
+    // Not a fatal failure for the verify flow — just skip the banner.
+    return;
+  }
+  const g = (prefs.guilds || []).find(x => x.guild_id === guildId);
+  if (!g) {
+    // Either the user isn't in that guild, or the gateway hasn't
+    // refreshed their guild list yet. Surface it gently — linking
+    // Kick still works; the role just won't apply until they're a member.
+    showGuildCtx("You're not in that server yet — join it on Discord, then refresh.", true);
+    return;
+  }
+  const safeName = (g.guild_name || '(unnamed server)')
+    .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const wasDisabled = g.master_optout || (g.plugin_optouts || []).includes(PLUGIN_SLUG);
+  // Always clear both — the master toggle wins over per-plugin overrides,
+  // so we need to remove it too even if only the per-plugin row was set.
+  try {
+    if (g.master_optout) {
+      await gatewayApi('POST', '/auth/preferences', {
+        guild_id: guildId, plugin: null, enabled: true,
+      });
+    }
+    if ((g.plugin_optouts || []).includes(PLUGIN_SLUG)) {
+      await gatewayApi('POST', '/auth/preferences', {
+        guild_id: guildId, plugin: PLUGIN_SLUG, enabled: true,
+      });
+    }
+  } catch (e) {
+    // Even if the clear failed, still show the banner so the user knows
+    // where they are. The role will simply not apply until they fix it
+    // manually via /auth/my_servers.
+  }
+  const nameHtml = '<span class="gctx-name">' + safeName + '</span>';
+  if (wasDisabled) {
+    showGuildCtx(isLinked
+      ? 'Enabled Kick roles for ' + nameHtml + ' — roles apply on the next sync.'
+      : 'Enabled Kick roles for ' + nameHtml + ' — finish linking Kick below to receive roles.');
+  } else {
+    showGuildCtx(isLinked
+      ? 'Kick roles are active in ' + nameHtml + '.'
+      : 'Once linked, Kick roles will apply in ' + nameHtml + '.');
+  }
+}
 
 async function loadStatus() {
   const r = await fetch(BASE_URL + '/verify/status', { credentials: 'include', cache: 'no-store' });
@@ -163,13 +292,17 @@ function renderStatus(s) {
   }
 
   // Step 2
+  const mLink = $('manage-link');
   if (!s.signed_in_discord) {
     kBtn.disabled = true;
     uBtn.style.display = 'none';
+    if (mLink) mLink.style.display = 'none';
     kStatus.textContent = 'Sign in to Discord first.';
     kStatus.classList.remove('linked');
     return;
   }
+  // Session is valid — apply the per-guild side effects (if any).
+  applyGuildContext(!!s.linked_kick);
   if (s.linked_kick) {
     stepK.classList.add('done');
     stepK.classList.remove('active');
@@ -186,6 +319,7 @@ function renderStatus(s) {
     kBtn.textContent = 'Re-link a different Kick account';
     kBtn.disabled = false;
     uBtn.style.display = '';
+    if (mLink) mLink.style.display = '';
   } else {
     stepK.classList.add('active');
     stepK.classList.remove('done');
@@ -194,6 +328,7 @@ function renderStatus(s) {
     kBtn.textContent = 'Link Kick account';
     kBtn.disabled = false;
     uBtn.style.display = 'none';
+    if (mLink) mLink.style.display = 'none';
   }
 }
 
