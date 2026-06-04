@@ -223,7 +223,10 @@ where
 /// work the periodic reconcile does, exposed as a job so a member visiting the
 /// verify page can force a fresh check on demand (gated by a per-channel
 /// cooldown at the call site so it can't spam reconciles).
-pub async fn enqueue_channel_refresh<'e, E>(executor: E, kick_channel_id: i64) -> Result<(), AppError>
+pub async fn enqueue_channel_refresh<'e, E>(
+    executor: E,
+    kick_channel_id: i64,
+) -> Result<(), AppError>
 where
     E: PgExecutor<'e>,
 {
