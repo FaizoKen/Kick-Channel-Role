@@ -86,6 +86,7 @@
     .guild-ctx .gctx-name { color: #fff; font-weight: 600; }
     .manage-link { font-size: 13px; color: var(--muted); margin: 14px 0 0; }
     .manage-link a { color: #9fb6ff; }
+    .refresh-note { font-size: 13px; color: var(--muted); margin: 12px 0 0; min-height: 18px; transition: color .15s; }
   </style>
 </head>
 <body>
@@ -120,7 +121,9 @@
     <div class="step-head"><span class="step-num">2</span> Connect Kick</div>
     <div class="status-line" id="kick-status">…</div>
     <button class="kick" id="kick-btn" type="button" disabled>Link Kick account</button>
+    <button class="switch" id="recheck-btn" type="button" style="display:none; margin-left:8px;">Re-check now</button>
     <button class="unlink" id="unlink-btn" type="button" style="display:none; margin-left:8px;">Unlink</button>
+    <p class="refresh-note" id="refresh-note"></p>
     <p class="manage-link" id="manage-link" style="display:none;">
       Getting Kick roles in servers you didn't intend?
       <a href="/auth/my_servers?from=/kick-channel-role/verify">Choose which servers receive roles →</a>
@@ -274,6 +277,7 @@ function renderStatus(s) {
   const switchForm = $('discord-switch-form');
   const kBtn = $('kick-btn');
   const uBtn = $('unlink-btn');
+  const rBtn = $('recheck-btn');
 
   // Step 1
   if (s.signed_in_discord) {
@@ -296,6 +300,7 @@ function renderStatus(s) {
   if (!s.signed_in_discord) {
     kBtn.disabled = true;
     uBtn.style.display = 'none';
+    if (rBtn) rBtn.style.display = 'none';
     if (mLink) mLink.style.display = 'none';
     kStatus.textContent = 'Sign in to Discord first.';
     kStatus.classList.remove('linked');
@@ -319,7 +324,11 @@ function renderStatus(s) {
     kBtn.textContent = 'Re-link a different Kick account';
     kBtn.disabled = false;
     uBtn.style.display = '';
+    if (rBtn) rBtn.style.display = '';
     if (mLink) mLink.style.display = '';
+    // Visiting the page re-pulls your latest channel relationship so roles
+    // self-correct without an unlink/re-link. Best-effort.
+    refreshChannelData(true);
   } else {
     stepK.classList.add('active');
     stepK.classList.remove('done');
@@ -328,7 +337,42 @@ function renderStatus(s) {
     kBtn.textContent = 'Link Kick account';
     kBtn.disabled = false;
     uBtn.style.display = 'none';
+    if (rBtn) rBtn.style.display = 'none';
     if (mLink) mLink.style.display = 'none';
+  }
+}
+
+// Nudge the server to re-pull this viewer's channel relationships ahead of
+// the periodic reconcile. `silent` is used for the automatic call on page
+// load — it shows the working/result note but stays quiet on transient
+// errors. The explicit "Re-check now" button passes false so failures surface.
+let refreshing = false;
+async function refreshChannelData(silent) {
+  const note = $('refresh-note');
+  if (!note || refreshing) return;
+  refreshing = true;
+  note.style.color = 'var(--muted)';
+  note.textContent = 'Checking your latest channel status…';
+  try {
+    const r = await fetch(BASE_URL + '/verify/refresh', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Request failed');
+    note.style.color = 'var(--success)';
+    note.textContent = d.refreshed
+      ? '✓ Re-checking now — your roles update within a minute.'
+      : '✓ Your status is already up to date.';
+  } catch (e) {
+    if (silent) {
+      note.textContent = '';
+    } else {
+      note.style.color = 'var(--danger)';
+      note.textContent = 'Could not refresh right now — try again shortly.';
+    }
+  } finally {
+    refreshing = false;
   }
 }
 
@@ -361,6 +405,8 @@ $('kick-btn').addEventListener('click', async () => {
     $('kick-btn').disabled = false;
   }
 });
+
+$('recheck-btn').addEventListener('click', () => refreshChannelData(false));
 
 $('unlink-btn').addEventListener('click', async () => {
   if (!confirm('Unlink your Kick account from this Discord identity? Any roles it granted will be removed.')) return;

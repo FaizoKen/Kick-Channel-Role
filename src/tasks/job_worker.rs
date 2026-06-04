@@ -127,7 +127,7 @@ impl From<AppError> for JobError {
     }
 }
 
-async fn dispatch(job: &Job, state: &AppState) -> Result<(), JobError> {
+async fn dispatch(job: &Job, state: &Arc<AppState>) -> Result<(), JobError> {
     let kind = JobKind::from_db(&job.kind)
         .ok_or_else(|| JobError::Terminal(format!("unknown job kind '{}'", job.kind)))?;
 
@@ -157,6 +157,26 @@ async fn dispatch(job: &Job, state: &AppState) -> Result<(), JobError> {
                 .and_then(Value::as_i64)
                 .ok_or_else(|| JobError::Terminal("channel_sync missing kick_channel_id".into()))?;
             sync::sync_for_channel(channel_id, state).await?;
+        }
+        JobKind::ChannelRefresh => {
+            let channel_id = job
+                .payload
+                .get("kick_channel_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| {
+                    JobError::Terminal("channel_refresh missing kick_channel_id".into())
+                })?;
+            // No Kick client configured ⇒ nothing to pull; treat as done so the
+            // job doesn't retry forever on a misconfigured deployment.
+            match crate::tasks::reconcile::build_client(state) {
+                Some(client) => {
+                    crate::tasks::reconcile::reconcile_channel(state, &client, channel_id).await?
+                }
+                None => tracing::debug!(
+                    channel_id,
+                    "channel_refresh skipped: Kick OAuth not configured"
+                ),
+            }
         }
     }
     Ok(())

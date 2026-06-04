@@ -61,7 +61,10 @@ pub async fn run(state: Arc<AppState>, mut shutdown: ShutdownGuard) {
     tracing::info!("Reconcile worker stopped");
 }
 
-fn build_client(state: &Arc<AppState>) -> Option<KickClient> {
+/// Build a Kick API client from configured OAuth credentials. `None` when the
+/// plugin isn't configured for Kick (no client id/secret) — callers should
+/// treat that as "nothing to reconcile" rather than an error.
+pub fn build_client(state: &Arc<AppState>) -> Option<KickClient> {
     Some(KickClient::new(
         state.config.kick.client_id.clone()?,
         state.config.kick.client_secret.clone()?,
@@ -79,7 +82,11 @@ async fn gc(state: &Arc<AppState>) {
     .await;
 }
 
-async fn reconcile_channel(
+/// Re-pull one channel's live state + membership facts from the broadcaster's
+/// list endpoints, write them to `channel_relations`, and fan out a
+/// `channel_sync`. Used by the periodic reconcile loop and by the on-demand
+/// `channel_refresh` job (member-triggered from the verify page).
+pub async fn reconcile_channel(
     state: &Arc<AppState>,
     client: &KickClient,
     cid: i64,

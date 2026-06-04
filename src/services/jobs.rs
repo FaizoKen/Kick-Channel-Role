@@ -27,6 +27,7 @@ pub enum JobKind {
     PlayerSync,
     ConfigSync,
     ChannelSync,
+    ChannelRefresh,
 }
 
 impl JobKind {
@@ -35,6 +36,7 @@ impl JobKind {
             Self::PlayerSync => "player_sync",
             Self::ConfigSync => "config_sync",
             Self::ChannelSync => "channel_sync",
+            Self::ChannelRefresh => "channel_refresh",
         }
     }
     pub fn from_db(s: &str) -> Option<Self> {
@@ -42,6 +44,7 @@ impl JobKind {
             "player_sync" => Some(Self::PlayerSync),
             "config_sync" => Some(Self::ConfigSync),
             "channel_sync" => Some(Self::ChannelSync),
+            "channel_refresh" => Some(Self::ChannelRefresh),
             _ => None,
         }
     }
@@ -213,4 +216,17 @@ where
 {
     let payload = json!({ "kick_channel_id": kick_channel_id });
     enqueue(executor, JobKind::ChannelSync, payload, 0).await
+}
+
+/// Re-pull a channel's membership facts (followers / subs / VIPs / mods) from
+/// the Kick list endpoints, then fan out a `channel_sync`. This is the same
+/// work the periodic reconcile does, exposed as a job so a member visiting the
+/// verify page can force a fresh check on demand (gated by a per-channel
+/// cooldown at the call site so it can't spam reconciles).
+pub async fn enqueue_channel_refresh<'e, E>(executor: E, kick_channel_id: i64) -> Result<(), AppError>
+where
+    E: PgExecutor<'e>,
+{
+    let payload = json!({ "kick_channel_id": kick_channel_id });
+    enqueue(executor, JobKind::ChannelRefresh, payload, 0).await
 }

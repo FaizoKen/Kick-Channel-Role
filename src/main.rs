@@ -199,6 +199,7 @@ async fn main() {
         .route("/verify/status", get(routes::verify::verify_status))
         .route("/verify/login", post(routes::verify::verify_login))
         .route("/verify/kick", post(routes::verify::verify_kick))
+        .route("/verify/refresh", post(routes::verify::verify_refresh))
         .route("/verify/unlink", post(routes::verify::verify_unlink))
         // Health & static
         .route("/favicon.ico", get(routes::health::favicon))

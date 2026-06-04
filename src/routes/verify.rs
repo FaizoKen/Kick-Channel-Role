@@ -120,6 +120,77 @@ pub async fn verify_unlink(
 }
 
 // ---------------------------------------------------------------------
+// POST /verify/refresh — member-triggered "re-check my data now"
+// ---------------------------------------------------------------------
+
+/// Per-channel floor between member-triggered reconciles. Kick has no
+/// per-viewer pull — relation facts come from per-channel broadcaster-token
+/// list endpoints — so a member refresh re-pulls the whole channel. This
+/// cooldown (read from `broadcasters.last_synced_at`, shared by all viewers)
+/// bounds the cost so a reload loop or a busy channel can't trigger
+/// back-to-back full reconciles.
+const REFRESH_COOLDOWN_SECS: f64 = 300.0;
+
+/// When a linked viewer opens the verify page the page calls this so their
+/// channel relationships get re-pulled from Kick ahead of the 6h reconcile,
+/// and their roles are corrected — no unlink/re-link needed. For each channel
+/// the viewer has a relation with whose last reconcile is older than the
+/// cooldown (and that doesn't already have a refresh queued), we enqueue a
+/// `channel_refresh`; that re-pulls facts and fans out a `channel_sync`. We
+/// also enqueue a cheap `player_sync` so roles re-evaluate immediately against
+/// whatever's already cached (e.g. relations webhooks already updated).
+pub async fn verify_refresh(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    // State-changing, cookie-authed → same Origin gate as /verify/kick.
+    csrf::verify_origin(&headers, &state.allowed_origins)?;
+    let (discord_id, _) = read_session(&jar, &state.config.session_secret)?;
+
+    // Nothing to refresh without a linked Kick account.
+    let kick_user_id: Option<i64> =
+        sqlx::query_scalar("SELECT kick_user_id FROM kick_users WHERE discord_id = $1")
+            .bind(&discord_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some(kick_user_id) = kick_user_id else {
+        return Ok(Json(json!({ "refreshed": false })));
+    };
+
+    // Channels this viewer has a relation with, whose last full reconcile is
+    // older than the cooldown and that don't already have a refresh queued.
+    let channels: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT cr.kick_channel_id \
+         FROM channel_relations cr \
+         JOIN broadcasters b ON b.kick_channel_id = cr.kick_channel_id \
+         WHERE cr.kick_user_id = $1 \
+           AND (b.last_synced_at IS NULL OR b.last_synced_at < now() - make_interval(secs => $2)) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM jobs j \
+               WHERE j.kind = 'channel_refresh' \
+                 AND j.status IN ('pending', 'in_progress') \
+                 AND (j.payload->>'kick_channel_id')::bigint = cr.kick_channel_id \
+           )",
+    )
+    .bind(kick_user_id)
+    .bind(REFRESH_COOLDOWN_SECS)
+    .fetch_all(&state.pool)
+    .await?;
+
+    for cid in &channels {
+        crate::services::jobs::enqueue_channel_refresh(&state.pool, *cid).await?;
+    }
+
+    // Cheap immediate re-evaluation of this viewer's roles against current
+    // cached facts. The channel_refresh above runs its own channel_sync once
+    // fresh facts land.
+    crate::services::jobs::enqueue_player_sync(&state.pool, &discord_id).await?;
+
+    Ok(Json(json!({ "refreshed": !channels.is_empty() })))
+}
+
+// ---------------------------------------------------------------------
 // POST /verify/login — Convention 27: relative return_to
 // ---------------------------------------------------------------------
 
