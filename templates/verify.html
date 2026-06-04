@@ -209,7 +209,7 @@ async function applyGuildContext(isLinked) {
   if (!guildId) return;
   let prefs;
   try {
-    prefs = await gatewayApi('GET', '/auth/preferences');
+    prefs = await gatewayApi('GET', '/auth/preferences?ensure_guild=' + encodeURIComponent(guildId));
   } catch (e) {
     // Not a fatal failure for the verify flow — just skip the banner.
     return;
