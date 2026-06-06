@@ -65,6 +65,7 @@
     }
     button.switch:hover { border-color: var(--kick); color: var(--kick); }
     button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
     .toast {
       position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
       background: var(--card); border: 1px solid var(--border);
@@ -120,9 +121,11 @@
   <div class="card step" id="step-kick">
     <div class="step-head"><span class="step-num">2</span> Connect Kick</div>
     <div class="status-line" id="kick-status">…</div>
-    <button class="kick" id="kick-btn" type="button" disabled>Link Kick account</button>
-    <button class="switch" id="recheck-btn" type="button" style="display:none; margin-left:8px;">Re-check now</button>
-    <button class="unlink" id="unlink-btn" type="button" style="display:none; margin-left:8px;">Unlink</button>
+    <div class="btn-row">
+      <button class="kick" id="kick-btn" type="button" disabled>Link Kick account</button>
+      <button class="switch" id="recheck-btn" type="button" style="display:none;">Re-check now</button>
+      <button class="unlink" id="unlink-btn" type="button" style="display:none;">Unlink</button>
+    </div>
     <p class="refresh-note" id="refresh-note"></p>
     <p class="manage-link" id="manage-link" style="display:none;">
       Getting Kick roles in servers you didn't intend?
