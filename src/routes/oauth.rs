@@ -31,6 +31,12 @@ const VIEWER_DONE_PAGE: &str = include_str!("../../templates/verify_done.html");
 /// The exact threshold is community-set; configurable later via env if needed.
 pub const OG_USER_ID_THRESHOLD: i64 = 1_000_000;
 
+/// Per-channel floor between link-triggered reconciles. A channel_refresh
+/// re-pulls the whole channel's membership, so when many viewers link at once
+/// (e.g. after an @everyone) this bounds it to ~one full reconcile per channel
+/// per window — the freshly-pulled facts cover every viewer who linked in it.
+const LINK_CHANNEL_REFRESH_COOLDOWN_SECS: f64 = 300.0;
+
 #[derive(Deserialize)]
 pub struct CallbackQuery {
     pub code: Option<String>,
@@ -498,6 +504,48 @@ async fn viewer_callback_inner(
                     discord_id = %row.discord_id,
                     "ensure_baseline_relations failed at link time: {e}"
                 );
+            }
+
+            // Kick exposes a viewer's follow/sub status only through the
+            // broadcaster-token list endpoints, so a user who *already* followed
+            // or subscribed before linking shows all-false until the next
+            // periodic reconcile — up to 6h away. Pull their channels' facts now
+            // via a channel_refresh (re-pulls membership, then fans out a
+            // channel_sync that re-evaluates roles). Deduped against any
+            // already-queued refresh and gated by the broadcaster's last
+            // reconcile, so a burst of linkers collapses to ~one reconcile per
+            // channel. Follows/subs made *after* linking arrive in real time via
+            // webhooks, so this only needs to cover the pre-link gap.
+            let channels: Vec<i64> = sqlx::query_scalar(
+                "SELECT gb.kick_channel_id \
+                 FROM guild_broadcasters gb \
+                 JOIN broadcasters b ON b.kick_channel_id = gb.kick_channel_id \
+                 WHERE gb.guild_id = ANY($1) \
+                   AND (b.last_synced_at IS NULL \
+                        OR b.last_synced_at < now() - make_interval(secs => $2)) \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM jobs j \
+                       WHERE j.kind = 'channel_refresh' \
+                         AND j.status IN ('pending', 'in_progress') \
+                         AND (j.payload->>'kick_channel_id')::bigint = gb.kick_channel_id \
+                   )",
+            )
+            .bind(&guild_ids)
+            .bind(LINK_CHANNEL_REFRESH_COOLDOWN_SECS)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+
+            for cid in &channels {
+                if let Err(e) =
+                    crate::services::jobs::enqueue_channel_refresh(&state.pool, *cid).await
+                {
+                    tracing::warn!(
+                        discord_id = %row.discord_id,
+                        kick_channel_id = cid,
+                        "enqueue channel_refresh at link failed: {e}"
+                    );
+                }
             }
         }
         Err(e) => {
