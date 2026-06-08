@@ -112,8 +112,7 @@ pub async fn verify_channels(
     // missing/garbage `guild` — just yields an empty list rather than an
     // error, so the page falls back to its generic "follow the channel your
     // server uses" copy. Avoids a pointless DB hit on junk input too.
-    let valid = (5..=25).contains(&guild_id.len())
-        && guild_id.bytes().all(|b| b.is_ascii_digit());
+    let valid = (5..=25).contains(&guild_id.len()) && guild_id.bytes().all(|b| b.is_ascii_digit());
     if !valid {
         return Ok(Json(json!({ "channels": [] })));
     }
