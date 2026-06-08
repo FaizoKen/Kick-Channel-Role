@@ -196,6 +196,7 @@ async fn main() {
         .route("/webhooks/kick", post(routes::webhooks::kick_webhook))
         // Member verification
         .route("/verify", get(routes::verify::verify_page))
+        .route("/verify/channels", get(routes::verify::verify_channels))
         .route("/verify/status", get(routes::verify::verify_status))
         .route("/verify/login", post(routes::verify::verify_login))
         .route("/verify/kick", post(routes::verify::verify_kick))

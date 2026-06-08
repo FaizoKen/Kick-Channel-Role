@@ -102,4 +102,8 @@ curl -s -X POST -H 'Authorization: Token rl_test' -H 'Content-Type: application/
 curl -s -H 'Authorization: Token rl_test' $PFX/config        # iframe ui_mode payload
 curl -s -X DELETE -H 'Authorization: Token rl_test' -H 'Content-Type: application/json' \
   -d '{"guild_id":"G","role_id":"R"}' $PFX/config            # {"success":true}
+
+# Member-facing combined verify page data source (public, no auth). Feeds the
+# "follow / subscribe on Kick" step. Empty list = guild has no channel connected.
+curl -s "$PFX/verify/channels?guild=<GUILD_ID>"             # {"channels":[{"kick_slug":...}]}
 ```

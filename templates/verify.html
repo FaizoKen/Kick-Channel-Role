@@ -88,12 +88,30 @@
     .manage-link { font-size: 13px; color: var(--muted); margin: 14px 0 0; }
     .manage-link a { color: #9fb6ff; }
     .refresh-note { font-size: 13px; color: var(--muted); margin: 12px 0 0; min-height: 18px; transition: color .15s; }
+    .channel-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+    .channel {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      background: #0b0d12; border: 1px solid var(--border);
+      border-radius: 9px; padding: 10px 12px;
+    }
+    .channel-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .channel-name { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .live-badge {
+      flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: .02em;
+      color: #08110b; background: var(--kick); padding: 2px 7px; border-radius: 999px;
+    }
+    a.channel-open {
+      flex-shrink: 0; text-decoration: none; font-size: 13px; font-weight: 600;
+      color: var(--kick); border: 1px solid var(--border);
+      padding: 7px 13px; border-radius: 8px; transition: border-color .15s, color .15s;
+    }
+    a.channel-open:hover { border-color: var(--kick); color: var(--kick-hover); }
   </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Link your Kick account</h1>
-  <p class="tagline">Two short steps. Your Discord roles update automatically as your channel relationship changes — give it up to a minute after subscribing / following.</p>
+  <h1>Get your Kick role</h1>
+  <p class="tagline">Everything's on this page. Follow (or subscribe to) the channel, link your accounts, and your Discord roles are assigned automatically — give it up to a minute after each step.</p>
 
   <!-- Server context banner: only shown when ?guild=<id> is present in the URL.
        Lets a server admin share a per-guild verify link that both links the
@@ -103,8 +121,21 @@
     <span id="guild-ctx-text"></span>
   </div>
 
+  <!-- Step 1: follow / subscribe. Instructional — we can't confirm the user
+       actually followed (that signal comes later, via webhooks once they've
+       linked), so this card has no done/active state. It lists the channel(s)
+       this guild watches (from /verify/channels) with a link straight to
+       kick.com so the admin doesn't have to paste it separately. -->
+  <div class="card step" id="step-follow">
+    <div class="step-head"><span class="step-num">1</span> Follow or subscribe on Kick</div>
+    <p>Open the channel below and follow it — or subscribe, if the role you want needs a sub. New follows and subs are picked up automatically once your accounts are linked.</p>
+    <div class="channel-list" id="channel-list">
+      <div class="status-line">Loading channel…</div>
+    </div>
+  </div>
+
   <div class="card step" id="step-discord">
-    <div class="step-head"><span class="step-num">1</span> Sign in with Discord</div>
+    <div class="step-head"><span class="step-num">2</span> Sign in with Discord</div>
     <div class="status-line" id="discord-status">Checking your session…</div>
     <!-- Real form POSTs (top-level navigation). The Discord/OAuth redirect
          chain is cross-origin, so fetch() can't follow it — the browser must.
@@ -119,7 +150,7 @@
   </div>
 
   <div class="card step" id="step-kick">
-    <div class="step-head"><span class="step-num">2</span> Connect Kick</div>
+    <div class="step-head"><span class="step-num">3</span> Connect Kick</div>
     <div class="status-line" id="kick-status">…</div>
     <div class="btn-row">
       <button class="kick" id="kick-btn" type="button" disabled>Link Kick account</button>
@@ -385,6 +416,46 @@ function escapeHtml(s) {
   ));
 }
 
+// Step 1 ("follow / subscribe"): list the Kick channel(s) this server watches
+// so the user can act without the admin pasting links. Public endpoint — runs
+// before sign-in. Best-effort: on any failure we fall back to generic copy.
+async function loadChannels() {
+  const list = $('channel-list');
+  if (!list) return;
+  try {
+    const url = BASE_URL + '/verify/channels' +
+      (guildId ? ('?guild=' + encodeURIComponent(guildId)) : '');
+    const r = await fetch(url, { cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    renderChannels((d && d.channels) || []);
+  } catch (e) {
+    renderChannels([]);
+  }
+}
+
+function renderChannels(channels) {
+  const list = $('channel-list');
+  if (!list) return;
+  if (!channels.length) {
+    // Either no ?guild context, or the admin hasn't connected a channel yet.
+    // Both are non-fatal — linking still works; tailor the wording.
+    list.innerHTML = '<div class="status-line">' + (guildId
+      ? "This server hasn't connected its Kick channel yet. You can still sign in and link below — your role applies once the admin connects one."
+      : "Open the Kick channel your server uses and follow (or subscribe to) it, then continue below.")
+      + '</div>';
+    return;
+  }
+  list.innerHTML = channels.map(c => {
+    const name = escapeHtml(c.display_name || c.kick_slug || 'Kick channel');
+    const slug = encodeURIComponent(c.kick_slug || '');
+    const live = c.is_live ? '<span class="live-badge">LIVE</span>' : '';
+    return '<div class="channel">' +
+      '<span class="channel-meta"><span class="channel-name">' + name + '</span>' + live + '</span>' +
+      '<a class="channel-open" href="https://kick.com/' + slug + '" target="_blank" rel="noopener">Open on Kick &rarr;</a>' +
+    '</div>';
+  }).join('');
+}
+
 // Sign-in is the #discord-login-form's native submit — no JS needed; the
 // browser navigates to /verify/login which 303-redirects through the
 // Discord OAuth chain and back.
@@ -439,6 +510,7 @@ $('unlink-btn').addEventListener('click', async () => {
   document.querySelectorAll('form.logout-form').forEach(f => { f.action = action; });
 })();
 
+loadChannels();
 loadStatus();
 </script>
 </body>

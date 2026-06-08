@@ -2,20 +2,29 @@
 //!
 //! Routes:
 //!   GET  /verify                       — landing page (HTML)
+//!   GET  /verify/channels?guild=<id>   — public: channels this guild watches
 //!   POST /verify/login                 — redirect to Auth Gateway Discord login
 //!   POST /verify/kick                  — start Kick OAuth (PKCE)
 //!   GET  /verify/status                — JSON status for the page's JS
+//!
+//! The landing page combines the whole member journey on one screen — follow /
+//! subscribe to the server's Kick channel, sign in with Discord, link Kick —
+//! so an admin can share just the `/verify?guild=<id>` URL without spelling out
+//! the steps. `/verify/channels` feeds the first ("follow") step and is
+//! intentionally unauthenticated: it must render before the user signs in, and
+//! it returns only the public Kick channel info an admin already advertises.
 //!
 //! Convention 27/36: login redirects use a *relative* `return_to=`, and the
 //! landing page renders an in-page sign-in prompt — never auto-redirects.
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect};
 use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -70,6 +79,58 @@ pub async fn verify_status(
         "kick_user_id": kick_link.as_ref().map(|(id, _)| id),
         "kick_username": kick_link.as_ref().map(|(_, u)| u.clone()),
     })))
+}
+
+// ---------------------------------------------------------------------
+// GET /verify/channels?guild=<id> — public list of the channels this guild
+// watches, so the landing page can render the "follow / subscribe" step
+// before the user signs in. Returns only public Kick info (slug, display
+// name, live status) the admin already advertises — no auth required.
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ChannelsQuery {
+    pub guild: Option<String>,
+}
+
+#[derive(sqlx::FromRow, Serialize)]
+struct VerifyChannel {
+    kick_channel_id: i64,
+    kick_slug: String,
+    display_name: String,
+    is_live: bool,
+    current_category: Option<String>,
+}
+
+pub async fn verify_channels(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ChannelsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let guild_id = q.guild.unwrap_or_default();
+
+    // Same shape the page validates (Discord snowflake). Anything else — a
+    // missing/garbage `guild` — just yields an empty list rather than an
+    // error, so the page falls back to its generic "follow the channel your
+    // server uses" copy. Avoids a pointless DB hit on junk input too.
+    let valid = (5..=25).contains(&guild_id.len())
+        && guild_id.bytes().all(|b| b.is_ascii_digit());
+    if !valid {
+        return Ok(Json(json!({ "channels": [] })));
+    }
+
+    let channels: Vec<VerifyChannel> = sqlx::query_as(
+        "SELECT b.kick_channel_id, b.kick_slug, b.display_name, b.is_live, b.current_category \
+         FROM guild_broadcasters gb \
+         JOIN broadcasters b USING (kick_channel_id) \
+         WHERE gb.guild_id = $1 \
+         ORDER BY b.is_live DESC, gb.connected_at DESC \
+         LIMIT 50",
+    )
+    .bind(&guild_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(json!({ "channels": channels })))
 }
 
 // ---------------------------------------------------------------------
