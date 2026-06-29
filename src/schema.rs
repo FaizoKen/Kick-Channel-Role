@@ -19,6 +19,9 @@ pub fn build_iframe_config(base_url: &str, guild_id: &str, role_id: &str) -> Val
         "name": "Kick Channel Role",
         "description": "Grant Discord roles based on Kick channel relationship — followers, subscribers, VIPs, mods, OGs, with rich condition logic.",
         "embed_url": embed_url,
+        // We honor read_only impersonation tokens (writes are blocked server-side),
+        // so RoleLogic may hand us a read-only token for viewing.
+        "supports_impersonation_readonly": true,
     })
 }
 
