@@ -350,7 +350,8 @@ pub async fn sync_for_role_link(
             delete_orphan_role_link(guild_id, role_id, pool).await;
             return Ok(());
         }
-        Err(_) => (0, 100),
+        Err(AppError::RoleLinkDisabled) => return Ok(()),
+        Err(e) => return Err(e),
     };
 
     let qualifying: Vec<String> = if tree.grant_on_any_relation {
