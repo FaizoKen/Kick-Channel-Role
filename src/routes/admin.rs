@@ -511,13 +511,19 @@ async fn require_role_config_access(
                 "Token does not grant access to this role link.".into(),
             ));
         }
-        return Ok(RoleConfigAccess { discord_id: s.discord_id, read_only: s.read_only });
+        return Ok(RoleConfigAccess {
+            discord_id: s.discord_id,
+            read_only: s.read_only,
+        });
     }
     // No iframe-session Bearer → direct-nav path. `require_manager` reads and
     // verifies the `rl_session` cookie itself, so there's no separate
     // pre-check here (an extra one only produced a more confusing message).
     let discord_id = require_manager(state, jar, guild_id).await?;
-    Ok(RoleConfigAccess { discord_id, read_only: false })
+    Ok(RoleConfigAccess {
+        discord_id,
+        read_only: false,
+    })
 }
 
 // ---------------------------------------------------------------------
