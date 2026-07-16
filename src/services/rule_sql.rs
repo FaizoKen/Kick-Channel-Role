@@ -69,7 +69,7 @@ fn target_expr(target: ConditionTarget) -> &'static str {
         IsModerator => "COALESCE(cr.is_moderator, false)",
         KicksDonatedToChannel => "COALESCE(cr.kicks_donated, 0)",
         ChatMessages30d => "COALESCE(cr.chat_messages_30d, 0)",
-        IsOg => "COALESCE(ku.is_og, false)",
+        IsOg => "COALESCE(cr.is_og, false)",
         AccountAgeDays => "FLOOR(EXTRACT(EPOCH FROM (now() - ku.kick_created_at)) / 86400)",
         CountryCode => "ku.country_code",
         Username => "ku.kick_username",

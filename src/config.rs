@@ -39,8 +39,6 @@ pub struct KickConfig {
     /// Kick application client_secret. Phase 3+: used in the OAuth 2.1 +
     /// PKCE flow for both broadcaster and viewer.
     pub client_secret: Option<String>,
-    /// HMAC secret Kick uses to sign webhook deliveries. Phase 8+.
-    pub webhook_secret: Option<String>,
 }
 
 impl KickConfig {
@@ -51,10 +49,6 @@ impl KickConfig {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             client_secret: env::var("KICK_CLIENT_SECRET")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-            webhook_secret: env::var("KICK_WEBHOOK_SECRET")
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),

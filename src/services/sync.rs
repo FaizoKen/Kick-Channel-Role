@@ -74,7 +74,7 @@ const FACTS_SELECT: &str = "SELECT \
     COALESCE(cr.is_moderator, false)       AS is_moderator, \
     COALESCE(cr.kicks_donated, 0)          AS kicks_donated, \
     COALESCE(cr.chat_messages_30d, 0)      AS chat_messages_30d, \
-    ku.is_og                               AS is_og, \
+    COALESCE(cr.is_og, false)              AS is_og, \
     ku.kick_created_at                     AS kick_created_at, \
     ku.country_code                        AS country_code, \
     ku.kick_username                       AS kick_username \

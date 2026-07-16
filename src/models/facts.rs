@@ -21,9 +21,10 @@ pub struct Facts {
     pub is_moderator: bool,
     pub kicks_donated: i64,
     pub chat_messages_30d: i64,
+    /// OG is a per-channel chat badge (broadcaster-granted, like VIP).
+    pub is_og: bool,
 
     // -- per-viewer (kick_users) --
-    pub is_og: bool,
     pub kick_created_at: Option<DateTime<Utc>>,
     pub country_code: Option<String>,
     pub username: String,

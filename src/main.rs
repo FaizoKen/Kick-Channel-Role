@@ -49,6 +49,10 @@ pub struct AppState {
     /// `NOTIFY jobs_pending`. Workers `select!` on this so a job inserted by
     /// any replica wakes every worker within ~ms.
     pub jobs_notify: Arc<tokio::sync::Notify>,
+    /// Kick's webhook-signing RSA public key, lazily fetched from
+    /// `GET /public/v1/public-key` on the first delivery and cached.
+    /// The ingestor refetches once on a signature miss to survive rotation.
+    pub kick_public_key: tokio::sync::RwLock<Option<rsa::RsaPublicKey>>,
 }
 
 #[tokio::main]
@@ -105,6 +109,7 @@ async fn main() {
         allowed_origins,
         draining: AtomicBool::new(false),
         jobs_notify: Arc::new(tokio::sync::Notify::new()),
+        kick_public_key: tokio::sync::RwLock::new(None),
     });
 
     // Single shutdown signal multiplexed to axum + every worker. A SIGTERM
@@ -130,9 +135,9 @@ async fn main() {
     }
     tracing::info!(workers = worker_concurrency, "Job workers started");
 
-    // Periodic worker: reconcile (6h) — rebuilds follower/sub facts and is
-    // the webhook-loss safety net. (No live poller: no rule depends on the
-    // channel's live state anymore.)
+    // Periodic worker: reconcile (6h) — refreshes live state, expires
+    // lapsed subs, and fans out channel_syncs so assignments converge.
+    // (No live poller: no rule depends on the channel's live state anymore.)
     let reconcile_handle = tokio::spawn(tasks::reconcile::run(
         Arc::clone(&state),
         shutdown.subscribe(),

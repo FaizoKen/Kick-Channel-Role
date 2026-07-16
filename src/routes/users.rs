@@ -101,6 +101,7 @@ pub async fn users_data(
             bool,
             bool,
             bool,
+            bool,
             i32,
             i32,
             i32,
@@ -116,6 +117,7 @@ pub async fn users_data(
                 COALESCE(bool_or(cr.is_follower),   false) AS is_follower, \
                 COALESCE(bool_or(cr.is_subscriber), false) AS is_subscriber, \
                 COALESCE(bool_or(cr.is_vip),        false) AS is_vip, \
+                COALESCE(bool_or(cr.is_og),         false) AS is_og, \
                 COALESCE(bool_or(cr.is_moderator),  false) AS is_moderator, \
                 COALESCE(max(cr.sub_months_cumulative), 0) AS sub_months, \
                 COALESCE(max(cr.sub_streak_months),    0) AS sub_streak, \
@@ -149,6 +151,7 @@ pub async fn users_data(
                 is_follower,
                 is_subscriber,
                 is_vip,
+                is_og,
                 is_moderator,
                 sub_months,
                 sub_streak,
@@ -165,6 +168,7 @@ pub async fn users_data(
                     "is_follower": is_follower,
                     "is_subscriber": is_subscriber,
                     "is_vip": is_vip,
+                    "is_og": is_og,
                     "is_moderator": is_moderator,
                     "sub_months": sub_months,
                     "sub_streak": sub_streak,

@@ -921,7 +921,7 @@ fn target_catalog() -> Vec<Value> {
         (IsModerator, "Is a channel moderator", "viewer"),
         (KicksDonatedToChannel, "KICKs donated to channel", "viewer"),
         (ChatMessages30d, "Chat messages (last 30d)", "viewer"),
-        (IsOg, "Has the Kick OG badge", "viewer"),
+        (IsOg, "Has this channel's OG badge", "viewer"),
         (AccountAgeDays, "Kick account age (days)", "viewer"),
         (CountryCode, "Country code", "viewer"),
         (Username, "Kick username", "viewer"),

@@ -1,9 +1,17 @@
-//! Kick.com API client: OAuth 2.1 + PKCE, Helix-equivalents, EventSub-style
-//! webhooks. Mirrors the shape of `Twitch-Follower-Role/src/services/twitch.rs`.
+//! Kick.com API client: OAuth 2.1 + PKCE, public API calls, webhook
+//! subscriptions and signature verification.
 //!
-//! Endpoint hostnames and exact field names are based on Kick's published
-//! docs at https://docs.kick.com — TODOs flag the bits to re-verify when
-//! Phase 3 is exercised against the real API.
+//! Endpoint paths, request/response shapes, and the webhook signing scheme
+//! follow Kick's published docs at https://docs.kick.com:
+//!   * events: POST/DELETE `/public/v1/events/subscriptions`
+//!     (`{broadcaster_user_id, events:[{name,version}], method:"webhook"}`)
+//!   * webhook signatures: RSA-SHA256 (PKCS#1 v1.5) over
+//!     `"{message_id}.{timestamp}.{raw_body}"`, base64 signature, public key
+//!     served at GET `/public/v1/public-key`.
+//!
+//! Note Kick's public API has NO list endpoints for a channel's followers /
+//! subscribers / VIPs / moderators — those facts can only be accumulated
+//! from webhook events (incl. `chat.message.sent` badges).
 //!
 //! This is a deliberately fuller API surface than the current call sites
 //! consume (response structs carry every documented field; a few methods —
@@ -14,8 +22,10 @@
 
 use base64::Engine;
 use governor::{Quota, RateLimiter};
-use hmac::{Hmac, Mac};
 use rand::RngCore;
+use rsa::pkcs1v15::Pkcs1v15Sign;
+use rsa::pkcs8::DecodePublicKey;
+use rsa::RsaPublicKey;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU32;
@@ -24,10 +34,6 @@ use std::time::Duration;
 
 use crate::error::AppError;
 
-type HmacSha256 = Hmac<Sha256>;
-
-// TODO(kick-docs): confirm these endpoints. Kick has moved auth between
-// `id.kick.com/oauth/*` and `kick.com/oauth/*` historically.
 pub const AUTHORIZE_URL: &str = "https://id.kick.com/oauth/authorize";
 pub const TOKEN_URL: &str = "https://id.kick.com/oauth/token";
 pub const API_BASE: &str = "https://api.kick.com/public/v1";
@@ -88,30 +94,6 @@ pub struct TokenResponse {
 #[derive(Debug, Deserialize)]
 struct ApiList<T> {
     data: Vec<T>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct FollowerData {
-    pub user_id: i64,
-    pub followed_at: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SubscriberData {
-    pub user_id: i64,
-    #[serde(default)]
-    pub expires_at: Option<String>,
-    #[serde(default)]
-    pub started_at: Option<String>,
-    #[serde(default)]
-    pub months_total: Option<i64>,
-    #[serde(default)]
-    pub is_gift: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ChannelRoleUser {
-    pub user_id: i64,
 }
 
 #[derive(Clone)]
@@ -334,121 +316,15 @@ impl KickClient {
             .await
     }
 
-    /// List subscribers for a broadcaster's channel. Paginates server-side;
-    /// callers can stop early. Endpoint shape:
-    /// `GET /public/v1/channels/{id}/subscriptions`.
-    pub async fn list_subscribers(
-        &self,
-        broadcaster_user_id: i64,
-        access_token: &str,
-    ) -> Result<Vec<SubscriberData>, AppError> {
-        self.permit().await;
-        let url = format!("{API_BASE}/channels/{broadcaster_user_id}/subscriptions");
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| AppError::KickApi(format!("subs request failed: {e}")))?;
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::KickApi(format!("subs body: {e}")))?;
-        if !status.is_success() {
-            return Err(AppError::KickApi(format!(
-                "list_subscribers: {status} - {body}"
-            )));
-        }
-        let parsed: ApiList<SubscriberData> = serde_json::from_str(&body)
-            .map_err(|e| AppError::KickApi(format!("subs parse: {e} | body: {body}")))?;
-        Ok(parsed.data)
-    }
-
-    /// List followers for the channel.
-    pub async fn list_followers(
-        &self,
-        broadcaster_user_id: i64,
-        access_token: &str,
-    ) -> Result<Vec<FollowerData>, AppError> {
-        self.permit().await;
-        let url = format!("{API_BASE}/channels/{broadcaster_user_id}/followers");
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| AppError::KickApi(format!("followers request failed: {e}")))?;
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::KickApi(format!("followers body: {e}")))?;
-        if !status.is_success() {
-            return Err(AppError::KickApi(format!(
-                "list_followers: {status} - {body}"
-            )));
-        }
-        let parsed: ApiList<FollowerData> = serde_json::from_str(&body)
-            .map_err(|e| AppError::KickApi(format!("followers parse: {e} | body: {body}")))?;
-        Ok(parsed.data)
-    }
-
-    /// List moderators for the channel.
-    pub async fn list_moderators(
-        &self,
-        broadcaster_user_id: i64,
-        access_token: &str,
-    ) -> Result<Vec<ChannelRoleUser>, AppError> {
-        self.list_channel_role(broadcaster_user_id, "moderators", access_token)
-            .await
-    }
-
-    /// List VIPs for the channel.
-    pub async fn list_vips(
-        &self,
-        broadcaster_user_id: i64,
-        access_token: &str,
-    ) -> Result<Vec<ChannelRoleUser>, AppError> {
-        self.list_channel_role(broadcaster_user_id, "vips", access_token)
-            .await
-    }
-
-    async fn list_channel_role(
-        &self,
-        broadcaster_user_id: i64,
-        kind: &str,
-        access_token: &str,
-    ) -> Result<Vec<ChannelRoleUser>, AppError> {
-        self.permit().await;
-        let url = format!("{API_BASE}/channels/{broadcaster_user_id}/{kind}");
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| AppError::KickApi(format!("{kind} request failed: {e}")))?;
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::KickApi(format!("{kind} body: {e}")))?;
-        if !status.is_success() {
-            return Err(AppError::KickApi(format!("list {kind}: {status} - {body}")));
-        }
-        let parsed: ApiList<ChannelRoleUser> = serde_json::from_str(&body)
-            .map_err(|e| AppError::KickApi(format!("{kind} parse: {e} | body: {body}")))?;
-        Ok(parsed.data)
-    }
-
     // -----------------------------------------------------------------
-    // EventSub-style webhook subscriptions (Phase 8)
+    // Webhook event subscriptions
     // -----------------------------------------------------------------
 
-    /// Subscribe to a channel event. Phase 8 wires the call sites.
+    /// Subscribe to a channel event via webhook. Request/response shapes per
+    /// docs.kick.com "Subscribe to Events":
+    /// `POST /public/v1/events/subscriptions` with
+    /// `{broadcaster_user_id, events:[{name, version}], method:"webhook"}`,
+    /// response `{data:[{name, subscription_id, version, error}]}`.
     pub async fn subscribe_event(
         &self,
         event_type: &str,
@@ -458,9 +334,9 @@ impl KickClient {
         self.permit().await;
         let url = format!("{API_BASE}/events/subscriptions");
         let body = serde_json::json!({
-            "type": event_type,
-            "version": 1,
-            "condition": { "broadcaster_user_id": broadcaster_user_id }
+            "broadcaster_user_id": broadcaster_user_id,
+            "events": [{ "name": event_type, "version": 1 }],
+            "method": "webhook",
         });
         let resp = self
             .http
@@ -481,26 +357,34 @@ impl KickClient {
                 "subscribe {event_type}: {status} - {body_text}"
             )));
         }
-        // TODO(kick-docs): confirm response shape; using {data:[{id:"..."}]} for now.
         let parsed: serde_json::Value = serde_json::from_str(&body_text)
             .map_err(|e| AppError::KickApi(format!("subscribe parse: {e} | body: {body_text}")))?;
-        parsed["data"][0]["id"]
+        let entry = &parsed["data"][0];
+        // Per-event failures come back 200 with a non-empty `error` string.
+        if let Some(err) = entry["error"].as_str().filter(|s| !s.is_empty()) {
+            return Err(AppError::KickApi(format!(
+                "subscribe {event_type} rejected: {err}"
+            )));
+        }
+        entry["subscription_id"]
             .as_str()
             .map(String::from)
-            .ok_or_else(|| AppError::KickApi("subscribe response missing id".into()))
+            .ok_or_else(|| AppError::KickApi("subscribe response missing subscription_id".into()))
     }
 
     /// Delete a webhook subscription by ID. Best-effort cleanup.
+    /// `DELETE /public/v1/events/subscriptions?id=<subscription_id>`.
     pub async fn unsubscribe_event(
         &self,
         subscription_id: &str,
         access_token: &str,
     ) -> Result<(), AppError> {
         self.permit().await;
-        let url = format!("{API_BASE}/events/subscriptions/{subscription_id}");
+        let url = format!("{API_BASE}/events/subscriptions");
         let resp = self
             .http
             .delete(&url)
+            .query(&[("id", subscription_id)])
             .bearer_auth(access_token)
             .send()
             .await
@@ -512,45 +396,81 @@ impl KickClient {
         }
         Ok(())
     }
+}
 
-    // -----------------------------------------------------------------
-    // Webhook signature verification
-    // -----------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Webhook signature verification (module-level: no client credentials
+// involved — Kick signs with its own key pair)
+// ---------------------------------------------------------------------
 
-    /// Verify the HMAC-SHA256 signature Kick attaches to webhook deliveries.
-    /// Signature header format: `sha256=<hex>`. The signed message is
-    /// `message_id + timestamp + raw_body` (mirrors Twitch EventSub; we'll
-    /// confirm against Kick's exact spec at Phase 8 wire-up).
-    pub fn verify_webhook_signature(
-        message_id: &str,
-        timestamp: &str,
-        body: &[u8],
-        webhook_secret: &str,
-        signature_header: &str,
-    ) -> bool {
-        // Reject deliveries older than 10 minutes — limits replay window.
-        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-            let age = chrono::Utc::now().signed_duration_since(ts);
-            if age.num_minutes().abs() > 10 {
-                return false;
-            }
-        } else {
+/// Fetch Kick's webhook-signing public key. Response shape:
+/// `{ "data": { "public_key": "-----BEGIN PUBLIC KEY-----…" } }`.
+/// No authentication required.
+pub async fn fetch_public_key(http: &reqwest::Client) -> Result<RsaPublicKey, AppError> {
+    let url = format!("{API_BASE}/public-key");
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| AppError::KickApi(format!("public-key request failed: {e}")))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::KickApi(format!("public-key body: {e}")))?;
+    if !status.is_success() {
+        return Err(AppError::KickApi(format!(
+            "fetch_public_key: {status} - {body}"
+        )));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| AppError::KickApi(format!("public-key parse: {e} | body: {body}")))?;
+    let pem = parsed["data"]["public_key"]
+        .as_str()
+        .ok_or_else(|| AppError::KickApi("public-key response missing data.public_key".into()))?;
+    RsaPublicKey::from_public_key_pem(pem)
+        .map_err(|e| AppError::KickApi(format!("public-key PEM parse: {e}")))
+}
+
+/// Verify the signature Kick attaches to webhook deliveries.
+/// Per docs.kick.com "Webhook Security": the signed message is
+/// `"{message_id}.{timestamp}.{raw_body}"` (dot-separated), signed with
+/// Kick's RSA private key (PKCS#1 v1.5, SHA-256); the header carries the
+/// base64-encoded signature.
+pub fn verify_webhook_signature(
+    public_key: &RsaPublicKey,
+    message_id: &str,
+    timestamp: &str,
+    body: &[u8],
+    signature_header: &str,
+) -> bool {
+    // Reject deliveries older than 10 minutes — limits replay window.
+    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+        let age = chrono::Utc::now().signed_duration_since(ts);
+        if age.num_minutes().abs() > 10 {
             return false;
         }
-
-        let Some(sig_hex) = signature_header.strip_prefix("sha256=") else {
-            return false;
-        };
-
-        let mut mac = HmacSha256::new_from_slice(webhook_secret.as_bytes())
-            .expect("HMAC accepts any key length");
-        mac.update(message_id.as_bytes());
-        mac.update(timestamp.as_bytes());
-        mac.update(body);
-
-        let computed = hex::encode(mac.finalize().into_bytes());
-        crate::services::rl_token::constant_time_eq(computed.as_bytes(), sig_hex.as_bytes())
+    } else {
+        return false;
     }
+
+    let Ok(signature) = base64::engine::general_purpose::STANDARD.decode(signature_header.trim())
+    else {
+        return false;
+    };
+
+    let mut message =
+        Vec::with_capacity(message_id.len() + timestamp.len() + body.len() + 2);
+    message.extend_from_slice(message_id.as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(timestamp.as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(body);
+
+    let digest = Sha256::digest(&message);
+    public_key
+        .verify(Pkcs1v15Sign::new::<Sha256>(), &digest, &signature)
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------
@@ -587,6 +507,39 @@ mod tests {
     fn verifier_has_enough_entropy() {
         let v = new_code_verifier();
         assert!(v.len() >= 43 && v.len() <= 128);
+    }
+
+    #[test]
+    fn webhook_signature_roundtrip() {
+        use rsa::RsaPrivateKey;
+        let mut rng = rand::thread_rng();
+        let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("keygen");
+        let pub_key = priv_key.to_public_key();
+
+        let id = "msg-1";
+        let ts = chrono::Utc::now().to_rfc3339();
+        let body: &[u8] = br#"{"hello":"world"}"#;
+
+        let mut message = Vec::new();
+        message.extend_from_slice(id.as_bytes());
+        message.push(b'.');
+        message.extend_from_slice(ts.as_bytes());
+        message.push(b'.');
+        message.extend_from_slice(body);
+        let digest = Sha256::digest(&message);
+        let sig = priv_key
+            .sign(Pkcs1v15Sign::new::<Sha256>(), &digest)
+            .expect("sign");
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig);
+
+        assert!(verify_webhook_signature(&pub_key, id, &ts, body, &sig_b64));
+        // Tampered message id fails.
+        assert!(!verify_webhook_signature(&pub_key, "msg-2", &ts, body, &sig_b64));
+        // Stale timestamp fails even with a valid signature over it.
+        let old_ts = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        assert!(!verify_webhook_signature(&pub_key, id, &old_ts, body, &sig_b64));
+        // Garbage base64 fails.
+        assert!(!verify_webhook_signature(&pub_key, id, &ts, body, "!!!"));
     }
 
     #[test]

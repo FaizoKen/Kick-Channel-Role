@@ -41,6 +41,7 @@
   }
   .b-sub  { background:#1d3a2b; color:#53d49a; }
   .b-vip  { background:#3a2b1d; color:#f6c177; }
+  .b-og   { background:#2d1d3a; color:#c793f7; }
   .b-mod  { background:#1d2b3a; color:#7aa2f7; }
   .b-fol  { background:#252a36; color:#a9b1c3; }
   .meta { color:#8a93a4; font-size:12px; }
@@ -99,6 +100,7 @@
   <button class="filter active" data-f="all">All</button>
   <button class="filter" data-f="is_subscriber">Subscribers</button>
   <button class="filter" data-f="is_vip">VIP</button>
+  <button class="filter" data-f="is_og">OG</button>
   <button class="filter" data-f="is_moderator">Moderators</button>
   <button class="filter" data-f="is_follower">Followers</button>
   <span id="count" class="count"></span>
@@ -134,6 +136,7 @@ function badges(u){
   const out = [];
   if (u.is_subscriber) out.push(`<span class="badge b-sub">SUB${u.sub_months?` ${u.sub_months}mo`:''}</span>`);
   if (u.is_vip)        out.push('<span class="badge b-vip">VIP</span>');
+  if (u.is_og)         out.push('<span class="badge b-og">OG</span>');
   if (u.is_moderator)  out.push('<span class="badge b-mod">MOD</span>');
   if (u.is_follower && !u.is_subscriber) out.push('<span class="badge b-fol">Follower</span>');
   return out.join('') || '<span class="meta">—</span>';

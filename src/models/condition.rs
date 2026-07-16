@@ -32,9 +32,11 @@ pub enum ConditionTarget {
     IsModerator,
     KicksDonatedToChannel,
     ChatMessages30d,
+    /// Per-channel OG chat badge (broadcaster-granted, like VIP) — read
+    /// from channel_relations, populated from chat.message.sent badges.
+    IsOg,
 
     // -- viewer account facts (read from kick_users) --
-    IsOg,
     AccountAgeDays,
     CountryCode,
     Username,

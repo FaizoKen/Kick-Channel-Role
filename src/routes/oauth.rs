@@ -27,10 +27,6 @@ const SUCCESS_PAGE: &str = include_str!("../../templates/oauth_done.html");
 /// page with a button back to /verify.
 const VIEWER_DONE_PAGE: &str = include_str!("../../templates/verify_done.html");
 
-/// Kick user IDs below this cutoff are treated as "OG" (early-adopter badge).
-/// The exact threshold is community-set; configurable later via env if needed.
-pub const OG_USER_ID_THRESHOLD: i64 = 1_000_000;
-
 /// Per-channel floor between link-triggered reconciles. A channel_refresh
 /// re-pulls the whole channel's membership, so when many viewers link at once
 /// (e.g. after an @everyone) this bounds it to ~one full reconcile per channel
@@ -292,17 +288,55 @@ pub const BROADCASTER_SCOPES: &str = "user:read channel:read events:subscribe";
 /// Viewer flow needs only the bare minimum — identify the linking user.
 pub const VIEWER_SCOPES: &str = "user:read";
 
-/// Event types we subscribe to per channel. TODO(kick-docs): confirm exact
-/// names against Kick's events catalog at integration time.
+/// Event types we subscribe to per channel — the ones Kick's events catalog
+/// actually offers that we consume. `chat.message.sent` is load-bearing:
+/// it's the only source for the VIP / moderator / OG channel badges (Kick
+/// has no list endpoints for those). There is NO unfollow or
+/// subscription-cancelled event; sub lapses are handled via `expires_at`.
 pub const EVENT_TYPES: &[&str] = &[
     "channel.followed",
     "channel.subscription.new",
     "channel.subscription.renewal",
     "channel.subscription.gifts",
-    "channel.subscription.cancel",
-    "livestream.online",
-    "livestream.offline",
+    "chat.message.sent",
+    "kicks.gifted",
+    "livestream.status.updated",
+    "livestream.metadata.updated",
 ];
+
+/// Subscribe (only) the event types this channel has no active subscription
+/// row for. Self-healing path: called by the reconcile worker so channels
+/// connected before a subscription bug-fix / catalog change converge without
+/// the broadcaster having to reconnect.
+pub(crate) async fn subscribe_missing_channel_events(
+    state: &Arc<AppState>,
+    client: &KickClient,
+    broadcaster_user_id: i64,
+    access_token: &str,
+) -> Result<(), crate::error::AppError> {
+    let existing: Vec<String> = sqlx::query_scalar(
+        "SELECT event_type FROM webhook_subscriptions \
+         WHERE kick_channel_id = $1 AND status = 'active'",
+    )
+    .bind(broadcaster_user_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let missing: Vec<&str> = EVENT_TYPES
+        .iter()
+        .copied()
+        .filter(|et| !existing.iter().any(|e| e == et))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    tracing::info!(
+        broadcaster_user_id,
+        missing = ?missing,
+        "subscribing missing webhook event types"
+    );
+    subscribe_event_list(state, client, broadcaster_user_id, access_token, &missing).await;
+    Ok(())
+}
 
 /// Register (idempotently) all webhook subscriptions for a channel and
 /// persist their Kick subscription IDs. Best-effort: logs and continues.
@@ -312,7 +346,17 @@ async fn subscribe_channel_events(
     broadcaster_user_id: i64,
     access_token: &str,
 ) {
-    for et in EVENT_TYPES {
+    subscribe_event_list(state, client, broadcaster_user_id, access_token, EVENT_TYPES).await;
+}
+
+async fn subscribe_event_list(
+    state: &Arc<AppState>,
+    client: &KickClient,
+    broadcaster_user_id: i64,
+    access_token: &str,
+    event_types: &[&str],
+) {
+    for et in event_types {
         match client
             .subscribe_event(et, broadcaster_user_id, access_token)
             .await
@@ -420,9 +464,13 @@ async fn viewer_callback_inner(
         .map(|c| c.slug)
         .unwrap_or_else(|| user.name.to_ascii_lowercase().replace('_', "-"));
 
-    // We do NOT persist the viewer's tokens — per-channel facts come from the
-    // broadcaster's token. All we need is the Kick user_id to bind the link.
-    let is_og = user.user_id < OG_USER_ID_THRESHOLD;
+    // We do NOT persist the viewer's tokens — per-channel facts come from
+    // webhook events. All we need is the Kick user_id to bind the link.
+    //
+    // NOTE: OG is a per-channel chat badge (broadcaster-granted, like VIP),
+    // NOT an account attribute — it lives in `channel_relations.is_og` and
+    // is populated from `chat.message.sent` badges. The old account-level
+    // `kick_users.is_og` heuristic is dead (migration 011).
 
     // Pull the Discord display name from the session cookie so the public
     // users page can show "DiscordName · @kickslug". The cookie is always
@@ -440,13 +488,12 @@ async fn viewer_callback_inner(
     // doesn't blank out a previously stored name on re-link.
     let result = sqlx::query(
         "INSERT INTO kick_users (\
-             discord_id, kick_user_id, kick_username, kick_created_at, is_og, discord_name, linked_at, refreshed_at\
-         ) VALUES ($1,$2,$3,$4,$5,$6, now(), now())\
+             discord_id, kick_user_id, kick_username, kick_created_at, discord_name, linked_at, refreshed_at\
+         ) VALUES ($1,$2,$3,$4,$5, now(), now())\
          ON CONFLICT (discord_id) DO UPDATE SET \
              kick_user_id = EXCLUDED.kick_user_id, \
              kick_username = EXCLUDED.kick_username, \
              kick_created_at = EXCLUDED.kick_created_at, \
-             is_og = EXCLUDED.is_og, \
              discord_name = COALESCE(EXCLUDED.discord_name, kick_users.discord_name), \
              refreshed_at = now()",
     )
@@ -457,7 +504,6 @@ async fn viewer_callback_inner(
     // /users endpoint. If it does, parse it; otherwise default to "now" so
     // account_age_days = 0 until the reconcile worker (Phase 9) backfills.
     .bind(chrono::Utc::now())
-    .bind(is_og)
     .bind(&discord_name)
     .execute(&state.pool)
     .await;

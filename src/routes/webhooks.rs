@@ -1,14 +1,24 @@
 //! Kick webhook ingestor. Single app-wide URL (`/webhooks/kick`); Kick
 //! routes every event for every subscribed channel here. We:
-//!   1. verify the HMAC signature (reject unsigned/old/forged),
+//!   1. verify the RSA signature (reject unsigned/old/forged) using Kick's
+//!      published public key (`GET /public/v1/public-key`, cached in
+//!      AppState, refetched once on a miss to survive key rotation),
 //!   2. dedupe on message_id (Kick retries on 5xx + occasional double-fire),
 //!   3. apply the fact change to `channel_relations` / `broadcasters`,
-//!   4. enqueue a player_sync (or channel_sync) so roles converge.
+//!   4. enqueue a player_sync so roles converge.
 //!
-//! TODO(kick-docs): the exact header names, signed-message construction, and
-//! event payload field paths are based on Twitch-EventSub conventions and
-//! must be reconciled against Kick's webhook spec at integration time. The
-//! mechanics (verify → dedupe → apply → enqueue) are spec-independent.
+//! Payload shapes follow docs.kick.com "Webhook Payloads": user objects are
+//! nested (`broadcaster.user_id`, `follower.user_id`, `subscriber.user_id`,
+//! `gifter.user_id`, `giftees[].user_id`, `sender.user_id`).
+//!
+//! Kick has NO unfollow or subscription-cancelled events and no list
+//! endpoints to rebuild from, so:
+//!   * sub lapses are handled by `sub_expires_at` (stored here from the
+//!     event's `expires_at`) + the reconcile worker's expiry sweep;
+//!   * VIP / moderator / OG are channel badges visible only on
+//!     `chat.message.sent` — each chat message is an authoritative snapshot
+//!     of the sender's badge set for that channel, so we sync those three
+//!     booleans (set AND clear) from it.
 
 use std::sync::Arc;
 
@@ -16,17 +26,39 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::services::jobs;
-use crate::services::kick::KickClient;
+use crate::services::kick;
 use crate::AppState;
 
-// Header names — TODO(kick-docs): confirm. Twitch uses `Twitch-Eventsub-*`.
+// Header names per docs.kick.com "Webhook Security" (matched
+// case-insensitively by axum's HeaderMap).
 const H_MESSAGE_ID: &str = "kick-event-message-id";
 const H_TIMESTAMP: &str = "kick-event-message-timestamp";
 const H_SIGNATURE: &str = "kick-event-signature";
 const H_EVENT_TYPE: &str = "kick-event-type";
+
+/// Get Kick's signing key from the AppState cache, fetching it on first use.
+/// `force` bypasses the cache (signature-miss path: key may have rotated).
+async fn signing_key(state: &Arc<AppState>, force: bool) -> Option<rsa::RsaPublicKey> {
+    if !force {
+        if let Some(k) = state.kick_public_key.read().await.as_ref() {
+            return Some(k.clone());
+        }
+    }
+    match kick::fetch_public_key(&state.http).await {
+        Ok(k) => {
+            *state.kick_public_key.write().await = Some(k.clone());
+            Some(k)
+        }
+        Err(e) => {
+            tracing::error!("failed to fetch Kick public key: {e}");
+            None
+        }
+    }
+}
 
 pub async fn kick_webhook(
     State(state): State<Arc<AppState>>,
@@ -39,16 +71,24 @@ pub async fn kick_webhook(
     let signature = hv(H_SIGNATURE).to_string();
     let header_event_type = hv(H_EVENT_TYPE).to_string();
 
-    let Some(secret) = state.config.kick.webhook_secret.as_deref() else {
-        tracing::error!("Webhook received but KICK_WEBHOOK_SECRET is not configured");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "not configured");
-    };
-
     if message_id.is_empty() || timestamp.is_empty() || signature.is_empty() {
         return (StatusCode::BAD_REQUEST, "missing signature headers");
     }
 
-    if !KickClient::verify_webhook_signature(&message_id, &timestamp, &body, secret, &signature) {
+    let Some(key) = signing_key(&state, false).await else {
+        // Can't verify without the key; 500 so Kick retries later.
+        return (StatusCode::INTERNAL_SERVER_ERROR, "no signing key");
+    };
+    let mut verified =
+        kick::verify_webhook_signature(&key, &message_id, &timestamp, &body, &signature);
+    if !verified {
+        // One forced refetch: the cached key may predate a rotation.
+        if let Some(fresh) = signing_key(&state, true).await {
+            verified =
+                kick::verify_webhook_signature(&fresh, &message_id, &timestamp, &body, &signature);
+        }
+    }
+    if !verified {
         tracing::warn!(message_id, "Webhook signature verification failed");
         return (StatusCode::UNAUTHORIZED, "bad signature");
     }
@@ -107,38 +147,16 @@ pub async fn kick_webhook(
     (StatusCode::OK, "ok")
 }
 
-/// Pull the first integer found at any of the given dot-free keys, searched
-/// at the top level and under common envelope keys (`data`, `event`).
-fn dig_i64(p: &Value, keys: &[&str]) -> Option<i64> {
-    let scopes = [Some(p), p.get("data"), p.get("event")];
-    for scope in scopes.into_iter().flatten() {
-        for k in keys {
-            if let Some(n) = scope.get(*k).and_then(Value::as_i64) {
-                return Some(n);
-            }
-            // user_id sometimes nested under {"user":{"id":N}}
-            if let Some(n) = scope
-                .get(k.trim_end_matches("_id"))
-                .and_then(|o| o.get("id"))
-                .and_then(Value::as_i64)
-            {
-                return Some(n);
-            }
-        }
-    }
-    None
+/// `payload.<obj>.user_id` — the shape every Kick webhook uses for people.
+fn user_id_of(p: &Value, obj: &str) -> Option<i64> {
+    p.get(obj)?.get("user_id")?.as_i64()
 }
 
-fn dig_str(p: &Value, keys: &[&str]) -> Option<String> {
-    let scopes = [Some(p), p.get("data"), p.get("event")];
-    for scope in scopes.into_iter().flatten() {
-        for k in keys {
-            if let Some(s) = scope.get(*k).and_then(Value::as_str) {
-                return Some(s.to_string());
-            }
-        }
-    }
-    None
+fn ts_of(p: &Value, key: &str) -> Option<DateTime<Utc>> {
+    p.get(key)
+        .and_then(Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
 }
 
 async fn apply_event(
@@ -147,95 +165,309 @@ async fn apply_event(
     p: &Value,
 ) -> Result<(), crate::error::AppError> {
     let pool = &state.pool;
-    let channel_id = dig_i64(p, &["broadcaster_user_id", "channel_id", "broadcaster_id"]);
-    let user_id = dig_i64(p, &["user_id", "subscriber_id", "follower_id"]);
-
-    // Normalize a few likely spellings.
     let et = event_type.to_ascii_lowercase();
 
-    // Live state is kept only for the admin "LIVE" badge — no rule depends
-    // on it anymore, so we update the column but do NOT fan out a re-sync
-    // (that was the mass add/remove-everyone path we removed by design).
-    if et.contains("stream.online") || et.contains("livestream.online") {
-        if let Some(cid) = channel_id {
-            sqlx::query(
-                "UPDATE broadcasters SET is_live = true, live_started_at = now(), \
-                 current_category = COALESCE($2, current_category), updated_at = now() \
-                 WHERE kick_channel_id = $1",
-            )
-            .bind(cid)
-            .bind(dig_str(p, &["category", "category_name"]))
-            .execute(pool)
-            .await?;
-        }
-        return Ok(());
-    }
-    if et.contains("stream.offline") || et.contains("livestream.offline") {
-        if let Some(cid) = channel_id {
-            sqlx::query(
-                "UPDATE broadcasters SET is_live = false, last_live_at = now(), \
-                 viewer_count = 0, updated_at = now() WHERE kick_channel_id = $1",
-            )
-            .bind(cid)
-            .execute(pool)
-            .await?;
-        }
-        return Ok(());
-    }
-
-    let (Some(cid), Some(uid)) = (channel_id, user_id) else {
-        tracing::warn!(event_type, "webhook missing channel/user id; skipping");
+    // Every event carries the channel as `broadcaster.user_id`.
+    let Some(cid) = user_id_of(p, "broadcaster") else {
+        tracing::warn!(event_type, "webhook missing broadcaster.user_id; skipping");
         return Ok(());
     };
 
-    // Ensure a channel_relations row exists, then patch the changed facts.
-    ensure_relation(pool, cid, uid).await?;
-
-    if et.contains("unfollow") {
-        sqlx::query("UPDATE channel_relations SET is_follower=false, last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(uid).execute(pool).await?;
-    } else if et.contains("follow") {
-        sqlx::query("UPDATE channel_relations SET is_follower=true, followed_at=COALESCE(followed_at, now()), last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(uid).execute(pool).await?;
-    } else if et.contains("subscription.gift") || et.contains("gifts") {
-        // Gifter sent subs; recipients each become subscribers. The gifter is
-        // identified by `gifter_user_id`; recipients under `user_ids`/`giftees`.
-        if let Some(gifter) = dig_i64(p, &["gifter_user_id", "gifter_id"]) {
-            ensure_relation(pool, cid, gifter).await?;
-            let qty = dig_i64(p, &["quantity", "amount", "count"]).unwrap_or(1);
-            sqlx::query("UPDATE channel_relations SET gifted_subs_given = gifted_subs_given + $3, last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-                .bind(cid).bind(gifter).bind(qty).execute(pool).await?;
-            enqueue_for_kick_user(state, gifter).await?;
+    match et.as_str() {
+        // Live state is kept only for the admin "LIVE" badge — no rule
+        // depends on it, so we update the column but do NOT fan out a
+        // re-sync (that was the mass add/remove-everyone path we removed
+        // by design).
+        "livestream.status.updated" => {
+            let is_live = p.get("is_live").and_then(Value::as_bool).unwrap_or(false);
+            if is_live {
+                sqlx::query(
+                    "UPDATE broadcasters SET is_live = true, \
+                     live_started_at = COALESCE($2, now()), updated_at = now() \
+                     WHERE kick_channel_id = $1",
+                )
+                .bind(cid)
+                .bind(ts_of(p, "started_at"))
+                .execute(pool)
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE broadcasters SET is_live = false, last_live_at = now(), \
+                     viewer_count = 0, updated_at = now() WHERE kick_channel_id = $1",
+                )
+                .bind(cid)
+                .execute(pool)
+                .await?;
+            }
         }
-        sqlx::query("UPDATE channel_relations SET is_subscriber=true, sub_is_gift=true, subscribed_at=COALESCE(subscribed_at, now()), sub_streak_months=GREATEST(sub_streak_months,1), sub_months_cumulative=GREATEST(sub_months_cumulative,1), last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(uid).execute(pool).await?;
-    } else if et.contains("subscription.renew") || et.contains("renewal") {
-        let months = dig_i64(p, &["months", "cumulative_months", "total_months"]);
-        sqlx::query(
-            "UPDATE channel_relations SET is_subscriber=true, \
-             sub_months_cumulative = GREATEST(sub_months_cumulative + 1, COALESCE($3, sub_months_cumulative)), \
-             sub_streak_months = sub_streak_months + 1, last_synced_at=now() \
-             WHERE kick_channel_id=$1 AND kick_user_id=$2",
-        )
-        .bind(cid).bind(uid).bind(months).execute(pool).await?;
-    } else if et.contains("subscription.new")
-        || et.contains("subscription.create")
-        || (et.contains("subscription") && !et.contains("cancel") && !et.contains("end"))
-    {
-        sqlx::query("UPDATE channel_relations SET is_subscriber=true, subscribed_at=COALESCE(subscribed_at, now()), sub_months_cumulative=GREATEST(sub_months_cumulative,1), sub_streak_months=GREATEST(sub_streak_months,1), last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(uid).execute(pool).await?;
-    } else if et.contains("subscription.cancel")
-        || et.contains("subscription.end")
-        || et.contains("subscription.expire")
-    {
-        sqlx::query("UPDATE channel_relations SET is_subscriber=false, sub_streak_months=0, last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(uid).execute(pool).await?;
-    } else {
-        tracing::debug!(event_type, "unhandled webhook event type; recorded only");
-        return Ok(());
+        "livestream.metadata.updated" => {
+            let category = p
+                .get("metadata")
+                .and_then(|m| m.get("category"))
+                .and_then(|c| c.get("name"))
+                .and_then(Value::as_str)
+                .or_else(|| p.get("category").and_then(|c| c.get("name")).and_then(Value::as_str));
+            if let Some(cat) = category {
+                sqlx::query(
+                    "UPDATE broadcasters SET current_category = $2, updated_at = now() \
+                     WHERE kick_channel_id = $1",
+                )
+                .bind(cid)
+                .bind(cat)
+                .execute(pool)
+                .await?;
+            }
+        }
+        // No unfollow event exists — a stale follow persists until the
+        // viewer re-links or support clears it. Documented limitation.
+        "channel.followed" => {
+            let Some(uid) = user_id_of(p, "follower") else {
+                tracing::warn!(event_type, "missing follower.user_id");
+                return Ok(());
+            };
+            ensure_relation(pool, cid, uid).await?;
+            sqlx::query(
+                "UPDATE channel_relations SET is_follower=true, \
+                 followed_at=COALESCE(followed_at, now()), last_synced_at=now() \
+                 WHERE kick_channel_id=$1 AND kick_user_id=$2",
+            )
+            .bind(cid)
+            .bind(uid)
+            .execute(pool)
+            .await?;
+            enqueue_for_kick_user(state, uid).await?;
+        }
+        "channel.subscription.new" => {
+            let Some(uid) = user_id_of(p, "subscriber") else {
+                tracing::warn!(event_type, "missing subscriber.user_id");
+                return Ok(());
+            };
+            ensure_relation(pool, cid, uid).await?;
+            sqlx::query(
+                "UPDATE channel_relations SET is_subscriber=true, \
+                 subscribed_at=COALESCE(subscribed_at, COALESCE($3, now())), \
+                 sub_expires_at=COALESCE($4, sub_expires_at), \
+                 sub_months_cumulative=GREATEST(sub_months_cumulative, COALESCE($5, 1)), \
+                 sub_streak_months=GREATEST(sub_streak_months, 1), \
+                 last_synced_at=now() \
+                 WHERE kick_channel_id=$1 AND kick_user_id=$2",
+            )
+            .bind(cid)
+            .bind(uid)
+            .bind(ts_of(p, "created_at"))
+            .bind(ts_of(p, "expires_at"))
+            .bind(p.get("duration").and_then(Value::as_i64))
+            .execute(pool)
+            .await?;
+            enqueue_for_kick_user(state, uid).await?;
+        }
+        "channel.subscription.renewal" => {
+            let Some(uid) = user_id_of(p, "subscriber") else {
+                tracing::warn!(event_type, "missing subscriber.user_id");
+                return Ok(());
+            };
+            ensure_relation(pool, cid, uid).await?;
+            // `duration` is the subscription's total months when Kick sends
+            // it; fall back to a simple increment when absent.
+            sqlx::query(
+                "UPDATE channel_relations SET is_subscriber=true, \
+                 sub_expires_at=COALESCE($4, sub_expires_at), \
+                 sub_months_cumulative=GREATEST(sub_months_cumulative + 1, COALESCE($3, 0)), \
+                 sub_streak_months=sub_streak_months + 1, \
+                 last_synced_at=now() \
+                 WHERE kick_channel_id=$1 AND kick_user_id=$2",
+            )
+            .bind(cid)
+            .bind(uid)
+            .bind(p.get("duration").and_then(Value::as_i64))
+            .bind(ts_of(p, "expires_at"))
+            .execute(pool)
+            .await?;
+            enqueue_for_kick_user(state, uid).await?;
+        }
+        "channel.subscription.gifts" => {
+            let expires_at = ts_of(p, "expires_at");
+            let giftees: Vec<i64> = p
+                .get("giftees")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|g| g.get("user_id").and_then(Value::as_i64))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if let Some(gifter) = user_id_of(p, "gifter") {
+                // Kick reports anonymous gifters with user_id 0 / null.
+                if gifter > 0 {
+                    ensure_relation(pool, cid, gifter).await?;
+                    sqlx::query(
+                        "UPDATE channel_relations SET \
+                         gifted_subs_given = gifted_subs_given + $3, last_synced_at=now() \
+                         WHERE kick_channel_id=$1 AND kick_user_id=$2",
+                    )
+                    .bind(cid)
+                    .bind(gifter)
+                    .bind(giftees.len().max(1) as i64)
+                    .execute(pool)
+                    .await?;
+                    enqueue_for_kick_user(state, gifter).await?;
+                }
+            }
+            for uid in giftees {
+                ensure_relation(pool, cid, uid).await?;
+                sqlx::query(
+                    "UPDATE channel_relations SET is_subscriber=true, sub_is_gift=true, \
+                     subscribed_at=COALESCE(subscribed_at, now()), \
+                     sub_expires_at=COALESCE($3, sub_expires_at), \
+                     sub_months_cumulative=GREATEST(sub_months_cumulative, 1), \
+                     sub_streak_months=GREATEST(sub_streak_months, 1), \
+                     last_synced_at=now() \
+                     WHERE kick_channel_id=$1 AND kick_user_id=$2",
+                )
+                .bind(cid)
+                .bind(uid)
+                .bind(expires_at)
+                .execute(pool)
+                .await?;
+                enqueue_for_kick_user(state, uid).await?;
+            }
+        }
+        // Chat is the ONLY place Kick exposes channel badges (VIP / mod /
+        // OG / founder / subscriber months), so this event doubles as our
+        // badge-fact sync. High-volume: only enqueue a player_sync when a
+        // badge-derived fact actually changed; the pure chat counter
+        // converges via the reconcile worker's periodic channel_sync.
+        "chat.message.sent" => {
+            let Some(uid) = user_id_of(p, "sender") else {
+                tracing::warn!(event_type, "missing sender.user_id");
+                return Ok(());
+            };
+            ensure_relation(pool, cid, uid).await?;
+
+            let badges: Vec<(&str, Option<i64>)> = p
+                .get("sender")
+                .and_then(|s| s.get("identity"))
+                .and_then(|i| i.get("badges"))
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| {
+                            b.get("type")
+                                .and_then(Value::as_str)
+                                .map(|t| (t, b.get("count").and_then(Value::as_i64)))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let has = |t: &str| badges.iter().any(|(bt, _)| *bt == t);
+            let count_of =
+                |t: &str| badges.iter().find(|(bt, _)| *bt == t).and_then(|(_, c)| *c);
+
+            // Activity counter + presence — always.
+            sqlx::query(
+                "UPDATE channel_relations SET chat_messages_30d = chat_messages_30d + 1, \
+                 last_seen_at = now() WHERE kick_channel_id=$1 AND kick_user_id=$2",
+            )
+            .bind(cid)
+            .bind(uid)
+            .execute(pool)
+            .await?;
+
+            let mut changed = false;
+
+            // Badge snapshot is authoritative for the three channel badges:
+            // set AND clear (a de-VIPed viewer loses the flag on next chat).
+            let (is_mod, is_vip, is_og) = (has("moderator"), has("vip"), has("og"));
+            let r = sqlx::query(
+                "UPDATE channel_relations SET is_moderator=$3, is_vip=$4, is_og=$5, \
+                 last_synced_at=now() \
+                 WHERE kick_channel_id=$1 AND kick_user_id=$2 \
+                   AND (is_moderator IS DISTINCT FROM $3 \
+                     OR is_vip IS DISTINCT FROM $4 \
+                     OR is_og IS DISTINCT FROM $5)",
+            )
+            .bind(cid)
+            .bind(uid)
+            .bind(is_mod)
+            .bind(is_vip)
+            .bind(is_og)
+            .execute(pool)
+            .await?;
+            changed |= r.rows_affected() > 0;
+
+            // Subscriber/founder badge: set-only (the sub lifecycle is owned
+            // by subscription events + the expiry sweep; a badge seen in chat
+            // can safely raise the floor but never clears the flag). The
+            // subscriber badge `count` is months subscribed.
+            if has("subscriber") || has("founder") {
+                let months = count_of("subscriber").unwrap_or(1).max(1);
+                let r = sqlx::query(
+                    "UPDATE channel_relations SET is_subscriber=true, \
+                     subscribed_at=COALESCE(subscribed_at, now()), \
+                     sub_months_cumulative=GREATEST(sub_months_cumulative, $3), \
+                     sub_streak_months=GREATEST(sub_streak_months, 1), \
+                     last_synced_at=now() \
+                     WHERE kick_channel_id=$1 AND kick_user_id=$2 \
+                       AND (is_subscriber = false OR sub_months_cumulative < $3)",
+                )
+                .bind(cid)
+                .bind(uid)
+                .bind(months)
+                .execute(pool)
+                .await?;
+                changed |= r.rows_affected() > 0;
+            }
+
+            // Sub-gifter badge count raises the gifted-subs floor (webhook
+            // increments stay authoritative for the exact number).
+            if let Some(gifted) = count_of("sub_gifter") {
+                let r = sqlx::query(
+                    "UPDATE channel_relations SET gifted_subs_given=$3, last_synced_at=now() \
+                     WHERE kick_channel_id=$1 AND kick_user_id=$2 AND gifted_subs_given < $3",
+                )
+                .bind(cid)
+                .bind(uid)
+                .bind(gifted)
+                .execute(pool)
+                .await?;
+                changed |= r.rows_affected() > 0;
+            }
+
+            if changed {
+                enqueue_for_kick_user(state, uid).await?;
+            }
+        }
+        "kicks.gifted" => {
+            let Some(uid) = user_id_of(p, "sender").or_else(|| user_id_of(p, "gifter")) else {
+                tracing::warn!(event_type, "missing sender.user_id");
+                return Ok(());
+            };
+            let amount = p
+                .get("gift")
+                .and_then(|g| g.get("amount"))
+                .and_then(Value::as_i64)
+                .or_else(|| p.get("amount").and_then(Value::as_i64))
+                .unwrap_or(0);
+            if amount > 0 {
+                ensure_relation(pool, cid, uid).await?;
+                sqlx::query(
+                    "UPDATE channel_relations SET kicks_donated = kicks_donated + $3, \
+                     last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2",
+                )
+                .bind(cid)
+                .bind(uid)
+                .bind(amount)
+                .execute(pool)
+                .await?;
+                enqueue_for_kick_user(state, uid).await?;
+            }
+        }
+        _ => {
+            tracing::debug!(event_type, "unhandled webhook event type; recorded only");
+        }
     }
 
-    enqueue_for_kick_user(state, uid).await?;
     Ok(())
 }
 

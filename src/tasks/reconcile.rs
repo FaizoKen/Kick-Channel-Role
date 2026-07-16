@@ -1,16 +1,21 @@
-//! Reconcile worker — the webhook-loss safety net. Every 6h, for each
-//! connected channel: refresh live state, rebuild the membership facts
-//! (followers / subscribers / VIPs / mods) from the broadcaster-token list
-//! endpoints, then fan out a channel_sync so role assignments converge even
-//! if some webhooks were dropped. Also GCs expired OAuth state + old
-//! webhook-delivery idempotency rows.
+//! Reconcile worker. Every 6h, for each connected channel: refresh live
+//! state, expire lapsed subscriptions, then fan out a channel_sync so role
+//! assignments converge even if some webhooks were dropped. Also GCs
+//! expired OAuth state + old webhook-delivery idempotency rows.
 //!
-//! Webhook-accumulated counters (`gifted_subs_given`, `chat_messages_30d`,
-//! `kicks_donated`) are intentionally NOT reset here — they can't be
-//! re-derived from list endpoints and the webhook stream is authoritative
-//! for them.
+//! Kick's public API has NO list endpoints for followers / subscribers /
+//! VIPs / moderators, so — unlike the Twitch plugin — membership facts
+//! cannot be rebuilt here; the webhook stream (incl. chat badges) is the
+//! only source and is authoritative. An earlier version of this worker
+//! called imagined list endpoints, treated their failure as an empty list,
+//! and wiped every relationship flag to false each cycle — never reset
+//! facts to defaults on a fetch failure.
+//!
+//! Sub expiry: Kick sends no subscription-cancelled event. Subscription
+//! webhooks record `expires_at`; here we flip `is_subscriber` off once
+//! that timestamp is a grace-window in the past (renewal webhooks push it
+//! forward before that in the healthy path).
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,10 +87,9 @@ async fn gc(state: &Arc<AppState>) {
     .await;
 }
 
-/// Re-pull one channel's live state + membership facts from the broadcaster's
-/// list endpoints, write them to `channel_relations`, and fan out a
-/// `channel_sync`. Used by the periodic reconcile loop and by the on-demand
-/// `channel_refresh` job (member-triggered from the verify page).
+/// Refresh one channel's live state, expire lapsed subscriptions, and fan
+/// out a `channel_sync`. Used by the periodic reconcile loop and by the
+/// on-demand `channel_refresh` job (member-triggered from the verify page).
 pub async fn reconcile_channel(
     state: &Arc<AppState>,
     client: &KickClient,
@@ -93,7 +97,17 @@ pub async fn reconcile_channel(
 ) -> Result<(), crate::error::AppError> {
     let token = valid_access_token(state, client, cid).await?;
 
-    // 1. Live state.
+    // 0. Self-heal webhook subscriptions: (re)subscribe any event type this
+    // channel has no active subscription for. Covers channels connected
+    // before a subscription bug-fix or an EVENT_TYPES catalog change —
+    // without this, only a broadcaster reconnect would pick those up.
+    if let Err(e) =
+        crate::routes::oauth::subscribe_missing_channel_events(state, client, cid, &token).await
+    {
+        tracing::warn!(kick_channel_id = cid, "subscription self-heal failed: {e}");
+    }
+
+    // 1. Live state (also proves the broadcaster token still works).
     if let Ok(ch) = client.refresh_channel_live_state(cid, &token).await {
         let is_live = ch.stream.as_ref().map(|s| s.is_live).unwrap_or(false);
         let viewers = ch.stream.as_ref().map(|s| s.viewer_count).unwrap_or(0);
@@ -110,94 +124,20 @@ pub async fn reconcile_channel(
         .await;
     }
 
-    // 2. Membership facts. Each list endpoint is authoritative for its own
-    // boolean — reset, then set the current members true, inside one tx.
-    let followers = client.list_followers(cid, &token).await.unwrap_or_default();
-    let subscribers = client
-        .list_subscribers(cid, &token)
-        .await
-        .unwrap_or_default();
-    let vips = client.list_vips(cid, &token).await.unwrap_or_default();
-    let mods = client
-        .list_moderators(cid, &token)
-        .await
-        .unwrap_or_default();
-
-    let mut tx = state.pool.begin().await?;
-
-    // Ensure rows exist for everyone we're about to touch.
-    let mut everyone: HashSet<i64> = HashSet::new();
-    for f in &followers {
-        everyone.insert(f.user_id);
-    }
-    for s in &subscribers {
-        everyone.insert(s.user_id);
-    }
-    for v in &vips {
-        everyone.insert(v.user_id);
-    }
-    for m in &mods {
-        everyone.insert(m.user_id);
-    }
-    for uid in &everyone {
-        sqlx::query(
-            "INSERT INTO channel_relations (kick_channel_id, kick_user_id) \
-             VALUES ($1,$2) ON CONFLICT DO NOTHING",
-        )
-        .bind(cid)
-        .bind(uid)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    // Reset the four authoritative booleans for this channel.
+    // 2. Expire lapsed subscriptions. A renewal webhook advances
+    // `sub_expires_at` before this fires in the healthy path; the 2-day
+    // grace absorbs webhook delivery lag and renewal retries so we don't
+    // flap a role off and back on around the billing edge.
     sqlx::query(
-        "UPDATE channel_relations SET is_follower=false, is_subscriber=false, \
-         is_vip=false, is_moderator=false WHERE kick_channel_id=$1",
+        "UPDATE channel_relations SET is_subscriber=false, sub_streak_months=0, \
+         last_synced_at=now() \
+         WHERE kick_channel_id=$1 AND is_subscriber \
+           AND sub_expires_at IS NOT NULL \
+           AND sub_expires_at < now() - interval '2 days'",
     )
     .bind(cid)
-    .execute(&mut *tx)
+    .execute(&state.pool)
     .await?;
-
-    for f in &followers {
-        let followed_at = chrono::DateTime::parse_from_rfc3339(&f.followed_at)
-            .map(|d| d.with_timezone(&chrono::Utc))
-            .ok();
-        sqlx::query(
-            "UPDATE channel_relations SET is_follower=true, \
-             followed_at=COALESCE($3, followed_at), last_synced_at=now() \
-             WHERE kick_channel_id=$1 AND kick_user_id=$2",
-        )
-        .bind(cid)
-        .bind(f.user_id)
-        .bind(followed_at)
-        .execute(&mut *tx)
-        .await?;
-    }
-    for s in &subscribers {
-        sqlx::query(
-            "UPDATE channel_relations SET is_subscriber=true, sub_is_gift=$3, \
-             sub_months_cumulative=GREATEST(sub_months_cumulative, COALESCE($4,1)), \
-             sub_streak_months=GREATEST(sub_streak_months,1), last_synced_at=now() \
-             WHERE kick_channel_id=$1 AND kick_user_id=$2",
-        )
-        .bind(cid)
-        .bind(s.user_id)
-        .bind(s.is_gift)
-        .bind(s.months_total)
-        .execute(&mut *tx)
-        .await?;
-    }
-    for v in &vips {
-        sqlx::query("UPDATE channel_relations SET is_vip=true, last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(v.user_id).execute(&mut *tx).await?;
-    }
-    for m in &mods {
-        sqlx::query("UPDATE channel_relations SET is_moderator=true, last_synced_at=now() WHERE kick_channel_id=$1 AND kick_user_id=$2")
-            .bind(cid).bind(m.user_id).execute(&mut *tx).await?;
-    }
-
-    tx.commit().await?;
 
     // 3. Re-evaluate every role link bound to this channel.
     jobs::enqueue_channel_sync(&state.pool, cid).await?;

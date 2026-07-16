@@ -218,11 +218,11 @@ where
     enqueue(executor, JobKind::ChannelSync, payload, 0).await
 }
 
-/// Re-pull a channel's membership facts (followers / subs / VIPs / mods) from
-/// the Kick list endpoints, then fan out a `channel_sync`. This is the same
-/// work the periodic reconcile does, exposed as a job so a member visiting the
-/// verify page can force a fresh check on demand (gated by a per-channel
-/// cooldown at the call site so it can't spam reconciles).
+/// Refresh a channel's live state + expire lapsed subs, then fan out a
+/// `channel_sync`. This is the same work the periodic reconcile does,
+/// exposed as a job so a member visiting the verify page can force a fresh
+/// check on demand (gated by a per-channel cooldown at the call site so it
+/// can't spam reconciles).
 pub async fn enqueue_channel_refresh<'e, E>(
     executor: E,
     kick_channel_id: i64,

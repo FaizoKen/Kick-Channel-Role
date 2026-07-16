@@ -240,7 +240,7 @@ const HELP={ is_follower:"Currently follows the channel.",
   is_moderator:"Is a channel moderator.",
   kicks_donated_to_channel:"Total KICKs donated to the channel.",
   chat_messages_30d:"Chat messages in the last 30 days.",
-  is_og:"Has Kick's early-adopter OG badge.",
+  is_og:"Holds this channel's OG badge (granted by you, like VIP).",
   account_age_days:"Age of their Kick account, in days.",
   country_code:"Public country code, e.g. US.",
   username:"Their Kick username." };
@@ -257,6 +257,8 @@ function presets(){ return [
   make:n=>({grant:false,groups:[[c('is_subscriber','eq',true),c('sub_months_cumulative','gte',n||3)]]})},
  {id:"vips", t:"My channel VIPs", d:"VIP badge holders.",
   make:()=>({grant:false,groups:[[c('is_vip','eq',true)]]})},
+ {id:"ogs", t:"My channel OGs", d:"OG badge holders.",
+  make:()=>({grant:false,groups:[[c('is_og','eq',true)]]})},
  {id:"mods", t:"My channel moderators", d:"Channel moderators.",
   make:()=>({grant:false,groups:[[c('is_moderator','eq',true)]]})},
  {id:"custom", t:"Advanced rule", d:"Combine several conditions with AND / OR.", make:null},
@@ -300,7 +302,7 @@ function detectPreset(cfg){
   if(g.length===1){ const cs=g[0].conditions||[];
     const only=t=>cs.length===1&&cs[0].target===t&&cs[0].operator==='eq'&&cs[0].value===true;
     if(only('is_follower'))return'followers'; if(only('is_subscriber'))return'subscribers';
-    if(only('is_vip'))return'vips'; if(only('is_moderator'))return'mods';
+    if(only('is_vip'))return'vips'; if(only('is_og'))return'ogs'; if(only('is_moderator'))return'mods';
     if(cs.length===2&&cs[0].target==='is_subscriber'&&cs[1].target==='sub_months_cumulative'&&cs[1].operator==='gte')return'loyal'; }
   return 'custom';
 }
@@ -352,8 +354,8 @@ function render(){
       <b>Public users page</b><span id="vp-saved" class="saved">Saved ✓</span>
       <div style="margin-top:4px; color:#8a93a4; font-size:12.5px">
         A read-only list of every linked Kick account in this server, with
-        their relationship (follower, subscriber, VIP, mod) to your connected
-        channels. Searchable and filterable.
+        their relationship (follower, subscriber, VIP, OG, mod) to your
+        connected channels. Searchable and filterable.
       </div>
       ${vp!=='disabled' ? `<div class="copybox" style="margin-top:9px">
         <code id="surl">${esc(sup.url)}</code>
