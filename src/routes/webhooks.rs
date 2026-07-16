@@ -206,7 +206,11 @@ async fn apply_event(
                 .and_then(|m| m.get("category"))
                 .and_then(|c| c.get("name"))
                 .and_then(Value::as_str)
-                .or_else(|| p.get("category").and_then(|c| c.get("name")).and_then(Value::as_str));
+                .or_else(|| {
+                    p.get("category")
+                        .and_then(|c| c.get("name"))
+                        .and_then(Value::as_str)
+                });
             if let Some(cat) = category {
                 sqlx::query(
                     "UPDATE broadcasters SET current_category = $2, updated_at = now() \
@@ -361,8 +365,7 @@ async fn apply_event(
                 })
                 .unwrap_or_default();
             let has = |t: &str| badges.iter().any(|(bt, _)| *bt == t);
-            let count_of =
-                |t: &str| badges.iter().find(|(bt, _)| *bt == t).and_then(|(_, c)| *c);
+            let count_of = |t: &str| badges.iter().find(|(bt, _)| *bt == t).and_then(|(_, c)| *c);
 
             // Activity counter + presence — always.
             sqlx::query(

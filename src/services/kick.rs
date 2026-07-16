@@ -459,8 +459,7 @@ pub fn verify_webhook_signature(
         return false;
     };
 
-    let mut message =
-        Vec::with_capacity(message_id.len() + timestamp.len() + body.len() + 2);
+    let mut message = Vec::with_capacity(message_id.len() + timestamp.len() + body.len() + 2);
     message.extend_from_slice(message_id.as_bytes());
     message.push(b'.');
     message.extend_from_slice(timestamp.as_bytes());
@@ -534,10 +533,14 @@ mod tests {
 
         assert!(verify_webhook_signature(&pub_key, id, &ts, body, &sig_b64));
         // Tampered message id fails.
-        assert!(!verify_webhook_signature(&pub_key, "msg-2", &ts, body, &sig_b64));
+        assert!(!verify_webhook_signature(
+            &pub_key, "msg-2", &ts, body, &sig_b64
+        ));
         // Stale timestamp fails even with a valid signature over it.
         let old_ts = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-        assert!(!verify_webhook_signature(&pub_key, id, &old_ts, body, &sig_b64));
+        assert!(!verify_webhook_signature(
+            &pub_key, id, &old_ts, body, &sig_b64
+        ));
         // Garbage base64 fails.
         assert!(!verify_webhook_signature(&pub_key, id, &ts, body, "!!!"));
     }

@@ -346,7 +346,14 @@ async fn subscribe_channel_events(
     broadcaster_user_id: i64,
     access_token: &str,
 ) {
-    subscribe_event_list(state, client, broadcaster_user_id, access_token, EVENT_TYPES).await;
+    subscribe_event_list(
+        state,
+        client,
+        broadcaster_user_id,
+        access_token,
+        EVENT_TYPES,
+    )
+    .await;
 }
 
 async fn subscribe_event_list(
