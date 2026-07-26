@@ -22,8 +22,9 @@ deploy, modeled directly on [Form-Respondent-Role](../Form-Respondent-Role/).
 > ingestor (HMAC-verified, idempotent) with auto-subscribe on connect;
 > live-state poller + 6h reconcile safety net; the iframe rule-builder UI
 > (dual-mode auth, postMessage protocol, optimistic locking,
-> refresh-without-clobber); optional public users list. 71 unit
-> tests; `cargo clippy -D warnings` clean.
+> refresh-without-clobber); optional public users list; guild-scoped API keys
+> + read-only `/api/v1` machine API. 82 unit tests (two run against a live
+> Postgres when `DATABASE_URL` is set); `cargo clippy -D warnings` clean.
 >
 > The Kick API specifics (endpoint hosts, scope names, event names, webhook
 > header/signature shape, user-object fields) are coded to Kick's published
@@ -92,8 +93,11 @@ src/
     verify.rs          # member verification flow
     webhooks.rs        # Kick webhook ingestor
     users.rs           # public linked-users list + view-permission setting
+    api_v1.rs          # read-only machine API (Bearer kck_… , guild from key)
+    api_keys.rs        # manager CRUD for those keys (create/list/revoke)
     health.rs          # /health, /ready, /favicon.ico
   services/
+    api_key.rs         # guild-scoped API keys: mint/hash/authenticate/quota
     rolelogic.rs       # RoleLogic API client (PUT/POST/DELETE users)
     auth_gateway.rs    # Auth Gateway /auth/internal/* (sync workers)
     auth.rs            # cookie+manager / guild-permission helpers
@@ -115,9 +119,77 @@ src/
     live_poll.rs       # 60s live-state refresh while broadcasting
     reconcile.rs       # 6h webhook-loss safety net + GC
     shutdown.rs        # tokio broadcast-based shutdown
-migrations/            # 001–009, applied in numeric order on startup
+migrations/            # 001–012, applied in numeric order on startup
 templates/             # iframe rule builder, verify, users list, oauth-done
 ```
+
+## Public API (`/api/v1`)
+
+A server manager can hand another service read-only access to their server's
+linked Kick accounts, as JSON, without that service ever holding a user's
+login.
+
+**Why a key and not the session cookie.** `rl_session` is a whole-account
+browser credential — every server, every plugin — with a short TTL, no
+per-integration revocation and no audit trail. It also can't work
+server-to-server at all: `/users/{guild}/data` *forwards* the caller's cookie
+to the Auth Gateway to resolve guild membership, and a machine has no cookie
+to forward. The API instead resolves membership through the gateway's
+server-to-server endpoint (`/auth/internal/guild_member_ids`), same source of
+truth and same per-plugin opt-out filter.
+
+**Keys** are minted from the plugin's role settings in the RoleLogic
+dashboard (Manage Server required). Each is scoped to one server, carries the
+`users:read` scope, and is stored only as a SHA-256 hash — the raw value is
+shown once and can never be retrieved. Revoking takes effect on the next
+request. Max 10 live keys per server.
+
+No endpoint takes a `guild_id`: the key carries it, so there is no cross-guild
+check that can be forgotten.
+
+```bash
+BASE=https://your-host/kick-channel-role
+KEY=kck_…
+
+# Discovery document — no auth, describes the whole contract.
+curl -s $BASE/api/v1
+
+# Confirm a key and see which server it points at.
+curl -s -H "Authorization: Bearer $KEY" $BASE/api/v1/whoami
+
+# Linked members. Cursor-paginated; ordered by Discord ID so the cursor is
+# stable even if someone renames mid-scan.
+curl -s -H "Authorization: Bearer $KEY" \
+  "$BASE/api/v1/users?limit=200&relation=subscriber"
+
+# Incremental poll — only what changed.
+curl -s -H "Authorization: Bearer $KEY" \
+  "$BASE/api/v1/users?updated_since=2026-07-27T00:00:00Z"
+
+# One member: "does this person qualify?" without paging the server.
+curl -s -H "Authorization: Bearer $KEY" $BASE/api/v1/users/123456789012345678
+```
+
+Query params on `/users`: `limit` (1–500, default 100), `cursor` (pass back
+`page.next_cursor`), `updated_since` (RFC 3339), `relation`
+(`follower|subscriber|vip|og|moderator`).
+
+Notes for integrators:
+
+- **Not gated on the users-page visibility setting.** That knob controls which
+  humans may browse the HTML page; a key is a separate, explicit grant. A UI
+  toggle must not silently break a running integration — revoke the key
+  instead.
+- **Server-to-server only.** The CORS allowlist covers the dashboard origins,
+  not arbitrary sites, so a browser on a third-party origin cannot call this.
+  That is deliberate: it keeps keys out of frontend bundles.
+- **Rate limit** 120 req/min per key, burst 30. `429` responses carry
+  `Retry-After`. The per-IP limiter (5/s, burst 20) sits underneath and will
+  trip first for a bursty single-host caller.
+- **Opted-out members are absent**, exactly as they are from role sync.
+- `404` on single-user lookup means "we have nothing to tell you about this
+  person" — not a member, never linked, or opted out are deliberately
+  indistinguishable.
 
 ## Development
 

@@ -53,6 +53,10 @@ pub struct AppState {
     /// `GET /public/v1/public-key` on the first delivery and cached.
     /// The ingestor refetches once on a signature miss to survive rotation.
     pub kick_public_key: tokio::sync::RwLock<Option<rsa::RsaPublicKey>>,
+    /// Per-API-key quota for `/api/v1/*`. Keyed on the key's row id so one
+    /// integration can't spend another's budget, and so a NAT'd caller isn't
+    /// throttled by whoever shares its egress IP.
+    pub api_rate_limiter: services::api_key::KeyRateLimiter,
 }
 
 #[tokio::main]
@@ -110,6 +114,20 @@ async fn main() {
         draining: AtomicBool::new(false),
         jobs_notify: Arc::new(tokio::sync::Notify::new()),
         kick_public_key: tokio::sync::RwLock::new(None),
+        api_rate_limiter: services::api_key::new_rate_limiter(),
+    });
+
+    // Drop per-key rate-limit buckets for integrations that have gone quiet,
+    // so a guild that churns through keys doesn't grow the map forever.
+    // Mirrors the per-IP governor's `retain_recent` task below.
+    let api_limiter_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            api_limiter_state.api_rate_limiter.retain_recent();
+        }
     });
 
     // Single shutdown signal multiplexed to axum + every worker. A SIGTERM
@@ -197,6 +215,21 @@ async fn main() {
         // Public all-users listing (every linked viewer with a relation)
         .route("/users/{guild_id}", get(routes::users::users_page))
         .route("/users/{guild_id}/data", get(routes::users::users_data))
+        // Admin — API keys for the machine API below (manager-only)
+        .route(
+            "/admin/{guild_id}/api-keys",
+            get(routes::api_keys::list).post(routes::api_keys::create),
+        )
+        .route(
+            "/admin/{guild_id}/api-keys/{key_id}",
+            delete(routes::api_keys::revoke),
+        )
+        // Read-only machine API. Bearer-authed by a guild-scoped API key;
+        // no cookie, and no `guild_id` in any path — the key carries it.
+        .route("/api/v1", get(routes::api_v1::index))
+        .route("/api/v1/whoami", get(routes::api_v1::whoami))
+        .route("/api/v1/users", get(routes::api_v1::list_users))
+        .route("/api/v1/users/{discord_id}", get(routes::api_v1::get_user))
         // Kick webhook ingestor (single app-wide URL)
         .route("/webhooks/kick", post(routes::webhooks::kick_webhook))
         // Member verification

@@ -149,6 +149,46 @@ pub async fn require_guild_admin(
     headers: &axum::http::HeaderMap,
     guild_id: &str,
 ) -> Result<String, AppError> {
+    Ok(require_guild_admin_ctx(state, jar, headers, guild_id)
+        .await?
+        .discord_id)
+}
+
+/// Outcome of a guild-scoped admin check: who is calling, and whether this
+/// is a read-only impersonation session (a developer viewing as the admin).
+pub struct GuildAdmin {
+    pub discord_id: String,
+    pub read_only: bool,
+}
+
+impl GuildAdmin {
+    /// Reject the call if the session is a read-only impersonation.
+    ///
+    /// Mandatory before anything that mints or destroys a credential. A
+    /// developer looking at a server's config to help debug it must not be
+    /// able to walk away holding a live API key for that server — the
+    /// dashboard promises the admin that impersonation cannot write, and
+    /// this is the sharpest possible instance of a write.
+    pub fn require_writable(&self) -> Result<&str, AppError> {
+        if self.read_only {
+            return Err(AppError::Forbidden(
+                "This is a read-only impersonation session; API keys cannot be \
+                 created or revoked from it."
+                    .into(),
+            ));
+        }
+        Ok(&self.discord_id)
+    }
+}
+
+/// Same gate as [`require_guild_admin`] but preserves the read-only flag so
+/// credential-mutating callers can refuse impersonated sessions.
+pub async fn require_guild_admin_ctx(
+    state: &Arc<AppState>,
+    jar: &CookieJar,
+    headers: &axum::http::HeaderMap,
+    guild_id: &str,
+) -> Result<GuildAdmin, AppError> {
     if let Some(bearer) = extract_bearer(headers) {
         let s = rl_token::verify_iframe_session(&bearer, &state.config.session_secret).ok_or_else(
             || {
@@ -162,9 +202,16 @@ pub async fn require_guild_admin(
                 "Token does not grant access to this server.".into(),
             ));
         }
-        return Ok(s.discord_id);
+        return Ok(GuildAdmin {
+            discord_id: s.discord_id,
+            read_only: s.read_only,
+        });
     }
-    require_manager(state, jar, guild_id).await
+    let discord_id = require_manager(state, jar, guild_id).await?;
+    Ok(GuildAdmin {
+        discord_id,
+        read_only: false,
+    })
 }
 
 pub struct GuildPermission {

@@ -70,6 +70,31 @@ next sync; reopen the plugin tab).
 fetch bubbles and the sync aborts without clearing (Convention 40). If you
 see it, check for a `sync_for_role_link` path that swallowed an error.
 
+**A guild's API integration suddenly gets 401s** — the key was revoked, or
+someone re-minted and swapped the wrong value in. Confirm which:
+
+```sql
+SELECT id, label, prefix, created_by, created_at, last_used_at, revoked_at, revoked_by
+  FROM guild_api_keys WHERE guild_id = '<guild>' ORDER BY created_at DESC;
+```
+
+Revoked rows are kept on purpose, so `revoked_by` / `revoked_at` answer "who
+turned this off and when". There is no un-revoke and no way to recover the
+token — we only store its SHA-256. The fix is always: mint a new key in the
+dashboard, paste it into the integration.
+
+**"Which key pulled our member list?"** — `last_used_at` (coarse: written at
+most once a minute per key) says a key is live. For what it actually read,
+run the app at `RUST_LOG=kick_channel_role=debug` and look for
+`api/v1 users listed` lines carrying `key_id`, `guild_id` and `returned`.
+Match `key_id` back to the table above. Tokens are never logged; only the
+public `prefix` appears, in the `API key created` / `API key revoked` lines.
+
+**Suspected key leak** — revoke it in the dashboard (effective on the very
+next request; there is no cached auth decision to expire), then check
+`last_used_at` against when the guild says their integration last ran. A gap
+means someone else was using it.
+
 ## Token / secret rotation
 
 - **`KICK_WEBHOOK_SECRET`**: rotating it invalidates Kick's stored signing
@@ -80,7 +105,13 @@ see it, check for a `sync_for_role_link` path that swallowed an error.
   (`services/crypto.rs`). Rotating it makes every `*_token_enc` blob
   undecryptable → every broadcaster must reconnect. Plan a `migrate_kek`
   step before rotating in production.
-- **`INTERNAL_API_KEY`**: rotate in lockstep with the Auth Gateway.
+- **`INTERNAL_API_KEY`**: rotate in lockstep with the Auth Gateway. Note this
+  is the *master* server-to-server credential across every guild — never hand
+  it to a guild owner who wants API access. Mint them a `kck_…` guild key
+  instead; that is the whole reason it exists.
+- **Guild `kck_…` API keys**: self-service, per guild, no operator action.
+  Rotation is mint-new → swap → revoke-old, and the 10-key ceiling leaves
+  room for that overlap.
 
 ## Scaling notes
 

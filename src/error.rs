@@ -41,6 +41,9 @@ pub enum AppError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    #[error("Rate limit exceeded; retry in {retry_after}s")]
+    RateLimited { retry_after: u64 },
+
     #[error("Not found: {0}")]
     NotFound(String),
 
@@ -108,6 +111,18 @@ impl IntoResponse for AppError {
             AppError::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, axum::Json(json!({ "error": msg }))).into_response()
             }
+            // `Retry-After` is what makes a 429 actionable for a machine
+            // client — without it an integration can only guess and hammer.
+            AppError::RateLimited { retry_after } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, retry_after.to_string())],
+                axum::Json(json!({
+                    "error": "Rate limit exceeded for this API key.",
+                    "code": "RATE_LIMITED",
+                    "retry_after": retry_after,
+                })),
+            )
+                .into_response(),
             AppError::NotFound(msg) => {
                 (StatusCode::NOT_FOUND, axum::Json(json!({ "error": msg }))).into_response()
             }

@@ -80,6 +80,32 @@
   .sup .vp .d { color:#8a93a4; font-size:11px; line-height:1.3; margin-top:1px; }
   .sup .saved { color:#7fd9b4; font-size:11.5px; margin-left:8px; opacity:0; transition:opacity .15s; }
   .sup .saved.show { opacity:1; }
+  /* API keys — same card chrome as the users-page block above */
+  .sup .keys { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+  .sup .key { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    background:#14171f; border:1px solid #262b36; border-radius:8px; padding:8px 10px; }
+  .sup .key .kl { font-weight:600; font-size:12.5px; word-break:break-word; }
+  .sup .key .km { color:#8a93a4; font-size:11px; margin-top:1px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .sup .key .kgap { margin-left:auto; }
+  .sup .key button { background:#2a1d22; color:#fca5a5; border:1px solid #5c2630;
+    border-radius:7px; padding:6px 11px; font-size:12px; font-weight:600;
+    cursor:pointer; font-family:inherit; white-space:nowrap; }
+  .sup .key button:hover { background:#3a232a; }
+  .sup .key button.arm { background:#7f1d1d; color:#fff; border-color:#b91c1c; }
+  .sup .mk { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .sup .mk input { flex:1 1 220px; min-width:0; background:#0b0d12; color:#e8eaed;
+    border:1px solid #2a2f3a; border-radius:7px; padding:8px 11px;
+    font-size:13px; font-family:inherit; }
+  .sup .mk button { background:#5865f2; color:#fff; border:0; border-radius:7px;
+    padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer;
+    font-family:inherit; white-space:nowrap; }
+  .sup .mk button:disabled { opacity:.6; cursor:default; }
+  .sup .newkey { margin-top:10px; background:#13211b; border:1px solid #2f6b4f;
+    border-radius:8px; padding:11px 12px; }
+  .sup .newkey .warn { color:#fbbf24; font-size:12px; font-weight:600; margin-bottom:2px; }
+  .sup .none { color:#8a93a4; font-size:12px; margin-top:9px; }
+  .sup .none a { color:#7aa2f7; }
   /* advanced */
   .adv { margin:6px 0 0; }
   .grp { border:1px solid #2a2f3a; border-radius:9px; padding:11px;
@@ -212,6 +238,12 @@ function wireCopy(btnId,text){ const b=document.getElementById(btnId); if(!b) re
     setTimeout(()=>b.textContent='Copy link',1500); }); }); }
 
 let state=null, dirty=false, refreshInFlight=false, supPending=false;
+// The just-minted token, held only until this page is left or the key is
+// revoked. Never persisted anywhere — the server keeps a hash.
+let newKey=null;
+// Two-step revoke: first click arms the button (id), second click commits.
+// A native confirm() inside the dashboard iframe is both ugly and blockable.
+let revokeArm=0;
 function setDirty(d){ dirty=d; postDirty(d);
   const s=document.getElementById('save'); if(s) s.disabled=!d; }
 // Compare the in-progress edit against the saved baseline; only mark dirty
@@ -292,6 +324,7 @@ async function load(){
       recomputeDirty();
     }
     render(); autoPreview();
+    loadApiKeys();  // second, independent fetch — renders the card when it lands
   }catch(e){ document.getElementById('app').innerHTML=
     `<div class="toast e">Network error: ${esc(String(e))}</div>`; }
 }
@@ -369,6 +402,66 @@ function render(){
       </div>
     </div>`;
 
+  // API access — guild-scoped keys for machine callers (another service that
+  // wants this server's linked-user JSON). Rendered only once the key list
+  // has loaded; a non-manager or a transient error simply omits the card
+  // rather than showing a broken one.
+  //
+  // These keys are deliberately independent of the visibility radios above,
+  // and the copy says so out loud: a setting about who may *browse* the page
+  // must never silently kill someone's running integration.
+  let apiBlk='';
+  if(state.api_keys){
+    const ak=state.api_keys;
+    const rows = ak.list.length ? ak.list.map(k=>`
+      <div class="key">
+        <div>
+          <div class="kl">${esc(k.label)}</div>
+          <div class="km">${esc(k.prefix)}… · ${k.last_used_at
+            ? 'last used '+esc(k.last_used_at.slice(0,10))
+            : 'never used'}</div>
+        </div>
+        <div class="kgap"></div>
+        <button data-revoke="${k.id}" class="${revokeArm===k.id?'arm':''}">${
+          revokeArm===k.id?'Confirm revoke':'Revoke'}</button>
+      </div>`).join('') : '';
+    const list = rows ? `<div class="keys">${rows}</div>`
+                      : `<div class="none">No API keys yet.</div>`;
+    // The token is in the DOM for exactly as long as this render survives.
+    // There is no "show again" — we only store its hash.
+    const nk = newKey ? `<div class="newkey">
+        <div class="warn">Copy this token now — it is stored hashed and can never be shown again.</div>
+        <div class="copybox"><code id="nkv">${esc(newKey.token)}</code>
+          <button id="copynk">Copy</button></div>
+      </div>` : '';
+    const mk = ak.list.length >= ak.max_keys
+      ? `<div class="none">Limit of ${ak.max_keys} keys reached — revoke one to create another.</div>`
+      : `<div class="mk">
+           <input id="klabel" type="text" maxlength="60" autocomplete="off"
+                  placeholder="What is this key for? e.g. Stream overlay">
+           <button id="mkkey">Create API key</button>
+         </div>`;
+    apiBlk = `
+      <div class="sup">
+        <b>API access for other services</b>
+        <div style="margin-top:4px; color:#8a93a4; font-size:12.5px">
+          Give another service read-only HTTP access to this server's linked
+          Kick accounts — the same data as the page above, as JSON. Each key
+          is scoped to this server only, needs nobody to stay signed in, and
+          can be revoked on its own without affecting anything else.
+          <div style="margin-top:6px">Keys keep working whatever you pick
+          above — that setting only controls who can open the page in a
+          browser. To cut a service off, revoke its key.</div>
+        </div>
+        ${list}
+        ${nk}
+        ${mk}
+        <div class="none">Endpoints and examples:
+          <a href="${esc(ak.docs_url)}" target="_blank" rel="noopener noreferrer">${esc(ak.docs_url)}</a>
+        </div>
+      </div>`;
+  }
+
   let chanBlk='';
   if(showChan){
     chanBlk = chans.length===0 ? `
@@ -404,6 +497,7 @@ function render(){
         <button id="copy">Copy link</button></div>
     </div>
     ${usersBlk}
+    ${apiBlk}
     <div class="foot">
       <span class="count" id="count"></span>
       <div class="foot-btns">
@@ -417,6 +511,11 @@ function render(){
   wireCopy('copy', verifyUrl);
   wireCopy('copysup', sup.url);
   app.querySelectorAll('input[name=vp]').forEach(r=>r.addEventListener('change',()=>setViewPerm(r.value)));
+  const mkb=document.getElementById('mkkey');
+  if(mkb) mkb.addEventListener('click',createApiKey);
+  app.querySelectorAll('[data-revoke]').forEach(b=>
+    b.addEventListener('click',()=>revokeApiKey(Number(b.dataset.revoke))));
+  if(newKey) wireCopy('copynk', newKey.token);
   const ln=document.getElementById('loyaln'); if(ln) ln.addEventListener('input',e=>{
     state._n=Math.max(1,Number(e.target.value)||1); applyPreset('loyal',true); });
   document.getElementById('save').addEventListener('click',doSave);
@@ -525,6 +624,73 @@ async function setViewPerm(next){
     postToast('Network error: '+e); }
   finally{ supPending=false; }
 }
+// --------------------------------------------------------------------
+// API keys
+// --------------------------------------------------------------------
+
+// Loaded separately from role_config_data so the refresh-without-clobber
+// logic in refreshFromServer() stays about the rule tree and never has to
+// reason about a token that must not be re-rendered away.
+async function loadApiKeys(){
+  try{
+    const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/api-keys`,
+      {headers:apiHeaders(),credentials:apiCreds(),cache:'no-store'});
+    if(!r.ok) return;  // not a manager, or a transient blip — just omit the card
+    const d=await r.json();
+    state.api_keys={list:d.keys||[], max_keys:d.max_keys||0, docs_url:d.docs_url||''};
+    render(); postHeight();
+  }catch(_){}
+}
+
+async function createApiKey(){
+  const inp=document.getElementById('klabel'); if(!inp) return;
+  const label=(inp.value||'').trim();
+  if(!label){ postToast('Give the key a label so you can tell your integrations apart.'); return; }
+  const btn=document.getElementById('mkkey');
+  if(btn){ btn.disabled=true; btn.textContent='Creating…'; }
+  try{
+    const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/api-keys`,
+      {method:'POST',headers:apiHeaders(),credentials:apiCreds(),
+       body:JSON.stringify({label})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){ postToast(d.error||'Could not create the API key.'); return; }
+    newKey={id:d.id, token:d.token};
+    revokeArm=0;
+    await loadApiKeys();  // re-renders, which paints the token box
+    postToast('API key created. Copy it now — it can never be shown again.','success');
+  }catch(e){ postToast('Network error: '+e); }
+  finally{
+    // loadApiKeys() re-rendered, so this button may be detached by now;
+    // re-read it rather than reusing the stale handle.
+    const b=document.getElementById('mkkey');
+    if(b){ b.disabled=false; b.textContent='Create API key'; }
+  }
+}
+
+async function revokeApiKey(id){
+  // First click arms; it disarms itself so a stray click later can't destroy
+  // a credential the admin forgot they'd half-pressed.
+  if(revokeArm!==id){
+    revokeArm=id; render(); postHeight();
+    clearTimeout(revokeApiKey._t);
+    revokeApiKey._t=setTimeout(()=>{
+      if(revokeArm===id){ revokeArm=0; render(); postHeight(); } },5000);
+    return;
+  }
+  clearTimeout(revokeApiKey._t);
+  revokeArm=0;
+  try{
+    const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/api-keys/${id}`,
+      {method:'DELETE',headers:apiHeaders(),credentials:apiCreds()});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){ postToast(d.error||'Could not revoke the key.'); render(); return; }
+    // Only clear the token box if it's the key that just died.
+    if(newKey && newKey.id===id) newKey=null;
+    await loadApiKeys();
+    postToast('API key revoked. Whatever was using it loses access immediately.','success');
+  }catch(e){ postToast('Network error: '+e); render(); }
+}
+
 async function connectChannel(){
   try{
     const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/broadcasters/connect`,
