@@ -87,7 +87,7 @@ pub async fn list(
     Ok(Json(json!({
         "keys": rows.iter().map(KeyRow::to_json).collect::<Vec<_>>(),
         "max_keys": MAX_ACTIVE_KEYS_PER_GUILD,
-        "docs_url": format!("{}/api/v1", state.config.base_url),
+        "docs_url": format!("{}/api/v1/docs", state.config.base_url),
     })))
 }
 

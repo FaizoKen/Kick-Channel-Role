@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kick Channel Role — API reference</title>
+<link rel="icon" href="{{BASE_URL}}/favicon.ico">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0f1115; --panel:#161922; --panel2:#13161e; --line:#2a2f3a;
+    --fg:#e8eaed; --dim:#8a93a4; --green:#53d49a; --blue:#7aa2f7;
+    --amber:#f6c177; --red:#fca5a5; --code:#0b0d12;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-size:15px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    line-height:1.6; }
+  a { color:var(--blue); }
+  code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+
+  .wrap { display:grid; grid-template-columns:232px minmax(0,1fr);
+    gap:44px; max-width:1180px; margin:0 auto; padding:0 22px; }
+
+  /* nav */
+  nav { position:sticky; top:0; align-self:start; height:100vh;
+    overflow-y:auto; padding:30px 0 40px; }
+  nav .brand { font-weight:700; font-size:15px; letter-spacing:-.01em; }
+  nav .brandsub { color:var(--dim); font-size:11.5px; margin:2px 0 18px;
+    text-transform:uppercase; letter-spacing:.07em; }
+  nav a { display:block; color:var(--dim); text-decoration:none; font-size:13px;
+    padding:5px 10px; border-left:2px solid transparent; border-radius:0 6px 6px 0; }
+  nav a:hover { color:var(--fg); background:var(--panel); }
+  nav a.on { color:var(--green); border-left-color:var(--green); background:#13211b; }
+  nav .grp { color:#5f6878; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.08em; margin:16px 0 5px 10px; font-weight:700; }
+
+  main { padding:34px 0 90px; min-width:0; }
+  h1 { font-size:29px; margin:0 0 8px; letter-spacing:-.02em; }
+  h2 { font-size:20px; margin:46px 0 12px; padding-top:12px; letter-spacing:-.01em;
+    border-top:1px solid var(--line); }
+  h2:first-of-type { border-top:0; }
+  h3 { font-size:15px; margin:26px 0 8px; }
+  p { margin:0 0 13px; }
+  .lede { color:#b6becd; font-size:16px; margin-bottom:20px; }
+  ul { margin:0 0 13px; padding-left:20px; }
+  li { margin:4px 0; }
+  .dim { color:var(--dim); }
+  small { font-size:12.5px; }
+
+  /* code */
+  pre { background:var(--code); border:1px solid #1e2530; border-radius:9px;
+    padding:13px 15px; overflow-x:auto; font-size:12.5px; line-height:1.55;
+    margin:0 0 13px; }
+  pre code { white-space:pre; }
+  p code, li code, td code { background:#1a1e28; border:1px solid #252b36;
+    border-radius:5px; padding:1px 5px; font-size:12.5px; color:#cfe3ff; }
+  .cw { position:relative; }
+  .cw button { position:absolute; top:8px; right:8px; background:#222834;
+    color:var(--dim); border:1px solid #333b49; border-radius:6px;
+    padding:4px 9px; font:600 11px inherit; cursor:pointer; opacity:0;
+    transition:opacity .12s; font-family:inherit; }
+  .cw:hover button, .cw button:focus { opacity:1; }
+  .cw button:hover { color:var(--fg); background:#2c3441; }
+
+  /* endpoint header */
+  .ep { display:flex; align-items:center; gap:9px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:9px 12px; margin:0 0 12px; }
+  .verb { background:#1d3a2b; color:var(--green); font-weight:700; font-size:11px;
+    letter-spacing:.06em; padding:3px 8px; border-radius:5px; }
+  .ep .path { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px;
+    word-break:break-all; }
+  .ep .auth { margin-left:auto; color:var(--dim); font-size:11.5px; white-space:nowrap; }
+
+  /* tables */
+  .tw { overflow-x:auto; margin:0 0 15px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel);
+    border:1px solid var(--line); border-radius:9px; overflow:hidden;
+    font-size:13px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid #1f242f;
+    vertical-align:top; }
+  th { background:#1a1e28; color:var(--dim); font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.06em; white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  td.k { white-space:nowrap; color:#cfe3ff;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; }
+  td.t { white-space:nowrap; color:var(--amber); font-size:12px; }
+
+  /* callouts */
+  .note { border-left:3px solid var(--blue); background:#141b26;
+    border-radius:0 9px 9px 0; padding:11px 14px; margin:0 0 15px; font-size:13.5px; }
+  .warn { border-left:3px solid var(--amber); background:#1e1a12; }
+  .stop { border-left:3px solid var(--red); background:#1e1416; }
+  .note b { color:var(--fg); }
+
+  .pill { display:inline-block; background:#1a1e28; border:1px solid #2b3240;
+    border-radius:999px; padding:2px 9px; font-size:11.5px; color:var(--dim);
+    margin:0 5px 5px 0; }
+
+  footer { color:var(--dim); font-size:12.5px; margin-top:54px;
+    border-top:1px solid var(--line); padding-top:16px; }
+
+  @media (max-width:860px) {
+    .wrap { grid-template-columns:1fr; gap:0; padding:0 16px; }
+    nav { position:static; height:auto; padding:22px 0 4px;
+      border-bottom:1px solid var(--line); }
+    nav .navlinks { display:flex; flex-wrap:wrap; gap:2px; }
+    nav a { border-left:0; border-radius:6px; padding:5px 9px; }
+    nav a.on { border-left:0; }
+    nav .grp { display:none; }
+    main { padding:24px 0 70px; }
+    h1 { font-size:24px; }
+    .cw button { opacity:1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <div class="brand">Kick Channel Role</div>
+  <div class="brandsub">API v1</div>
+  <div class="navlinks">
+    <div class="grp">Start</div>
+    <a href="#overview">Overview</a>
+    <a href="#key">Get an API key</a>
+    <a href="#auth">Authentication</a>
+    <div class="grp">Endpoints</div>
+    <a href="#whoami">whoami</a>
+    <a href="#list">List users</a>
+    <a href="#one">Get one user</a>
+    <div class="grp">Working with it</div>
+    <a href="#user-object">The user object</a>
+    <a href="#paging">Pagination</a>
+    <a href="#sync">Incremental sync</a>
+    <a href="#errors">Errors</a>
+    <a href="#limits">Rate limits</a>
+    <div class="grp">Reference</div>
+    <a href="#recipes">Recipes</a>
+    <a href="#openapi">OpenAPI spec</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Kick Channel Role API</h1>
+  <p class="lede">A read-only HTTP API over one Discord server's linked Kick
+  accounts — who has linked, and how they relate to the channels that server
+  has connected (follower, subscriber, VIP, OG, moderator).</p>
+
+  <p><span class="pill">Base URL <code>{{BASE_URL}}</code></span>
+     <span class="pill">JSON only</span>
+     <span class="pill">Read-only</span>
+     <span class="pill">Server-to-server</span></p>
+
+  <h2 id="overview">Overview</h2>
+  <p>Each API key is scoped to <b>exactly one Discord server</b>. That is why no
+  endpoint takes a server ID — the key already carries it. You cannot read a
+  server you weren't given a key for.</p>
+  <p>The data is the same set the server's own "linked users" page shows: every
+  member of that Discord server who has linked a Kick account, with their
+  relationship to the channels the server has connected. Members who opted out
+  of this plugin are excluded, exactly as they are from role syncing.</p>
+
+  <div class="note"><b>This is a server-to-server API.</b> Calls are expected
+  from your backend. Browsers on third-party origins are blocked by CORS, on
+  purpose — it keeps API keys out of frontend bundles, where they'd be public.
+  Never ship a key to a browser, a mobile app, or a public repo.</div>
+
+  <h2 id="key">Get an API key</h2>
+  <p>Keys are created by someone with <b>Manage Server</b> on the Discord
+  server whose data you want. If that isn't you, send these steps to them:</p>
+  <ul>
+    <li>Open the RoleLogic dashboard and go to the role using <b>Kick Channel Role</b>.</li>
+    <li>Scroll to <b>API access for other services</b>.</li>
+    <li>Enter a label naming the integration, then <b>Create API key</b>.</li>
+    <li>Copy the token and send it to the developer over a private channel.</li>
+  </ul>
+  <div class="note warn"><b>The token is shown once.</b> It's stored hashed, so
+  nobody — including the server owner or RoleLogic support — can retrieve it
+  later. Lost it? Create a new key and revoke the old one. Up to 10 live keys
+  per server, which leaves room to rotate without downtime.</div>
+  <p>A key looks like this — a <code>kck_</code> prefix and 43 random characters:</p>
+  <div class="cw"><pre><code>kck_yT4nQ2mBv8xKfR1sLpD7wZ0aHcJ9eN3gUiO6bXtVqMk</code></pre><button data-copy>Copy</button></div>
+
+  <h2 id="auth">Authentication</h2>
+  <p>Send the key as a bearer token on every request:</p>
+  <div class="cw"><pre><code>curl -H "Authorization: Bearer $KICK_API_KEY" \
+  {{BASE_URL}}/api/v1/whoami</code></pre><button data-copy>Copy</button></div>
+  <div class="note stop"><b>Never put the key in a URL.</b> Query strings end up
+  in server logs, browser history, proxy logs and <code>Referer</code> headers.
+  There is no query-parameter form of this API — the header is the only way.</div>
+  <p>Revocation is immediate: a revoked key fails on its very next request,
+  with no cached grace period.</p>
+
+  <h2 id="whoami">Check a key</h2>
+  <div class="ep"><span class="verb">GET</span><span class="path">/api/v1/whoami</span><span class="auth">requires key</span></div>
+  <p>Confirms the key works and tells you which server it points at. Make this
+  your first call when wiring up — it turns "something is wrong somewhere" into
+  a clear answer.</p>
+  <div class="cw"><pre><code>{
+  "guild": { "id": "918273645509182736", "name": "Faizo's Server" },
+  "key":   { "label": "Stream overlay", "scopes": ["users:read"] }
+}</code></pre><button data-copy>Copy</button></div>
+  <p class="dim"><small><code>guild.name</code> can be <code>null</code> if the
+  name isn't cached yet. That is not an error — the key is still valid.</small></p>
+
+  <h2 id="list">List linked users</h2>
+  <div class="ep"><span class="verb">GET</span><span class="path">/api/v1/users</span><span class="auth">requires key</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td class="k">limit</td><td class="t">integer</td><td>Page size, 1–500. Default 100. Out-of-range values are clamped, not rejected.</td></tr>
+      <tr><td class="k">cursor</td><td class="t">string</td><td>Pass back <code>page.next_cursor</code> from the previous response. Treat it as opaque.</td></tr>
+      <tr><td class="k">updated_since</td><td class="t">RFC 3339</td><td>Only users whose record changed at or after this instant. See <a href="#sync">Incremental sync</a>.</td></tr>
+      <tr><td class="k">relation</td><td class="t">enum</td><td>One of <code>follower</code>, <code>subscriber</code>, <code>vip</code>, <code>og</code>, <code>moderator</code>. Returns only users with that relation.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="cw"><pre><code>curl -H "Authorization: Bearer $KICK_API_KEY" \
+  "{{BASE_URL}}/api/v1/users?limit=200&relation=subscriber"</code></pre><button data-copy>Copy</button></div>
+  <div class="cw"><pre><code>{
+  "guild": { "id": "918273645509182736", "name": "Faizo's Server" },
+  "users": [
+    {
+      "discord_id":    "273645509182736451",
+      "discord_name":  "riverstone",
+      "kick_user_id":  4820117,
+      "kick_username": "riverstone",
+      "linked_at":     "2026-03-14T09:21:44+00:00",
+      "updated_at":    "2026-07-26T18:02:10+00:00",
+      "relation": {
+        "is_follower":           true,
+        "is_subscriber":         true,
+        "is_vip":                false,
+        "is_og":                 false,
+        "is_moderator":          false,
+        "sub_months_cumulative": 7,
+        "sub_streak_months":     3,
+        "gifted_subs_given":     2,
+        "followed_at":           "2026-01-02T11:40:00+00:00",
+        "last_seen_at":          "2026-07-26T17:55:03+00:00"
+      }
+    }
+  ],
+  "page": {
+    "limit":       200,
+    "count":       200,
+    "has_more":    true,
+    "next_cursor": "273645509182736451"
+  }
+}</code></pre><button data-copy>Copy</button></div>
+
+  <h2 id="one">Get one user</h2>
+  <div class="ep"><span class="verb">GET</span><span class="path">/api/v1/users/{discord_id}</span><span class="auth">requires key</span></div>
+  <p>Answers "does this specific person qualify?" without paging the whole
+  server. Returns the same user object under a <code>user</code> key.</p>
+  <div class="cw"><pre><code>curl -H "Authorization: Bearer $KICK_API_KEY" \
+  {{BASE_URL}}/api/v1/users/273645509182736451</code></pre><button data-copy>Copy</button></div>
+  <div class="note"><b>A 404 means "we have nothing to tell you about this
+  person".</b> It deliberately does not distinguish between: not a member of
+  this server, a member who never linked Kick, and a member who opted out.
+  Telling those apart would leak the server's membership list to a key that is
+  only entitled to the linked users.</div>
+
+  <h2 id="user-object">The user object</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td class="k">discord_id</td><td class="t">string</td><td>Discord snowflake. <b>Always a string</b> — it exceeds 53 bits, so parsing it as a JSON number loses precision.</td></tr>
+      <tr><td class="k">discord_name</td><td class="t">string | null</td><td>Display name last seen by RoleLogic. May be <code>null</code>.</td></tr>
+      <tr><td class="k">kick_user_id</td><td class="t">number</td><td>Kick's numeric user ID. Stable across renames — key your records on this, not the username.</td></tr>
+      <tr><td class="k">kick_username</td><td class="t">string</td><td>Current Kick username. Can change.</td></tr>
+      <tr><td class="k">linked_at</td><td class="t">RFC 3339</td><td>When they linked their Kick account.</td></tr>
+      <tr><td class="k">updated_at</td><td class="t">RFC 3339</td><td>Last time this record changed. Feed this to <code>updated_since</code>.</td></tr>
+      <tr><td class="k">relation.is_follower</td><td class="t">boolean</td><td>Follows at least one connected channel.</td></tr>
+      <tr><td class="k">relation.is_subscriber</td><td class="t">boolean</td><td>Has an active subscription.</td></tr>
+      <tr><td class="k">relation.is_vip</td><td class="t">boolean</td><td>Holds the VIP badge.</td></tr>
+      <tr><td class="k">relation.is_og</td><td class="t">boolean</td><td>Holds the OG badge. Per channel, granted by the broadcaster — not an account-age thing.</td></tr>
+      <tr><td class="k">relation.is_moderator</td><td class="t">boolean</td><td>Is a channel moderator.</td></tr>
+      <tr><td class="k">relation.sub_months_cumulative</td><td class="t">number</td><td>Total months subscribed, highest across channels.</td></tr>
+      <tr><td class="k">relation.sub_streak_months</td><td class="t">number</td><td>Current unbroken streak, highest across channels.</td></tr>
+      <tr><td class="k">relation.gifted_subs_given</td><td class="t">number</td><td>Subs they have gifted, summed across channels.</td></tr>
+      <tr><td class="k">relation.followed_at</td><td class="t">RFC 3339 | null</td><td>Earliest follow across channels. <code>null</code> if not following.</td></tr>
+      <tr><td class="k">relation.last_seen_at</td><td class="t">RFC 3339 | null</td><td>Most recent chat activity seen.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><b>Relations are collapsed across every channel the server
+  has connected.</b> If a server connects two channels and someone subscribes to
+  either, <code>is_subscriber</code> is <code>true</code>. Counts take the
+  highest value (months, streak) or the sum (gifted). You get one row per
+  person, never one per channel.</div>
+
+  <h2 id="paging">Pagination</h2>
+  <p>Cursor-based. Keep calling with <code>cursor=page.next_cursor</code> until
+  <code>has_more</code> is <code>false</code>. Results are ordered by an
+  immutable ID, so nobody gets skipped or duplicated if records change while
+  you're paging.</p>
+  <div class="cw"><pre><code>cursor=""
+while : ; do
+  resp=$(curl -s -H "Authorization: Bearer $KICK_API_KEY" \
+    "{{BASE_URL}}/api/v1/users?limit=500&cursor=$cursor")
+  echo "$resp" | jq -c '.users[]'
+  [ "$(echo "$resp" | jq -r '.page.has_more')" = "true" ] || break
+  cursor=$(echo "$resp" | jq -r '.page.next_cursor')
+done</code></pre><button data-copy>Copy</button></div>
+
+  <h2 id="sync">Incremental sync</h2>
+  <p>Don't re-download the whole server on a schedule. Record the time before
+  each run, then pass it as <code>updated_since</code> on the next one:</p>
+  <ul>
+    <li>Save <code>started_at</code> = now (UTC) <em>before</em> you start paging.</li>
+    <li>Page through with your previous <code>started_at</code> as <code>updated_since</code>.</li>
+    <li>On success, store the new <code>started_at</code> for next time.</li>
+  </ul>
+  <p>Overlap slightly (subtract a minute) rather than trying to be exact — the
+  API is idempotent to read, so seeing a record twice is harmless, while missing
+  one is not.</p>
+  <div class="note warn"><b>Deletions are invisible to <code>updated_since</code>.</b>
+  If someone unlinks Kick, leaves the server, or opts out, they simply stop
+  appearing — no tombstone is emitted. Do a full pass (no
+  <code>updated_since</code>) periodically, say daily, and treat anyone missing
+  from it as gone.</div>
+
+  <h2 id="errors">Errors</h2>
+  <p>Every error is JSON with an <code>error</code> field describing what
+  happened.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Status</th><th>Meaning</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td class="k">400</td><td>A parameter was malformed — a bad <code>updated_since</code>, an unknown <code>relation</code>.</td><td>Fix the request. Retrying won't help.</td></tr>
+      <tr><td class="k">401</td><td>Missing, unknown, or revoked key.</td><td>Check the header. Ask the server manager whether the key was revoked.</td></tr>
+      <tr><td class="k">403</td><td>The key lacks the scope for this endpoint.</td><td>Have a new key minted.</td></tr>
+      <tr><td class="k">404</td><td>No such linked user in this server.</td><td>Expected and normal. Not an error condition.</td></tr>
+      <tr><td class="k">429</td><td>Rate limited.</td><td>Wait for the <code>Retry-After</code> header (seconds), then retry.</td></tr>
+      <tr><td class="k">5xx</td><td>Temporary server-side problem.</td><td>Retry with exponential backoff.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note stop"><b>A 5xx never means "this server has no linked
+  users".</b> If an upstream lookup fails we return an error rather than an
+  empty list, precisely so you can tell the two apart. Treat any non-200 as
+  "no new information" and keep your last good snapshot — do not clear roles,
+  revoke perks, or delete records on a failed poll.</div>
+
+  <h2 id="limits">Rate limits</h2>
+  <p><b>120 requests per minute per key</b>, with a burst of 30. A per-IP limit
+  (5/sec, burst 20) sits underneath and may trip first if you fire a tight
+  burst from one host.</p>
+  <p>Over the limit you get <code>429</code> with a <code>Retry-After</code>
+  header in seconds. Honour it. With <code>limit=500</code> a single request
+  covers 500 users, so even a large server needs very few calls — if you're
+  hitting the ceiling, raise <code>limit</code> or switch to
+  <code>updated_since</code> rather than polling harder.</p>
+
+  <h2 id="recipes">Recipes</h2>
+  <h3>Node (fetch, built in on 18+)</h3>
+  <div class="cw"><pre><code>const BASE = "{{BASE_URL}}/api/v1";
+const KEY  = process.env.KICK_API_KEY;
+
+async function allUsers({ updatedSince } = {}) {
+  const out = [];
+  let cursor = "";
+  do {
+    const qs = new URLSearchParams({ limit: "500" });
+    if (cursor) qs.set("cursor", cursor);
+    if (updatedSince) qs.set("updated_since", updatedSince);
+
+    const r = await fetch(`${BASE}/users?${qs}`, {
+      headers: { Authorization: `Bearer ${KEY}` },
+    });
+    if (r.status === 429) {                       // back off and retry
+      await new Promise(s => setTimeout(s, (+r.headers.get("retry-after") || 1) * 1000));
+      continue;
+    }
+    if (!r.ok) throw new Error(`${r.status}: ${(await r.json()).error}`);
+
+    const { users, page } = await r.json();
+    out.push(...users);
+    cursor = page.has_more ? page.next_cursor : "";
+  } while (cursor);
+  return out;
+}
+
+const subs = (await allUsers()).filter(u =&gt; u.relation.is_subscriber);
+console.log(`${subs.length} subscribers`);</code></pre><button data-copy>Copy</button></div>
+
+  <h3>Python (requests)</h3>
+  <div class="cw"><pre><code>import os, time, requests
+
+BASE = "{{BASE_URL}}/api/v1"
+S = requests.Session()
+S.headers["Authorization"] = f"Bearer {os.environ['KICK_API_KEY']}"
+
+def all_users(updated_since=None):
+    users, cursor = [], None
+    while True:
+        params = {"limit": 500}
+        if cursor:        params["cursor"] = cursor
+        if updated_since: params["updated_since"] = updated_since
+
+        r = S.get(f"{BASE}/users", params=params, timeout=15)
+        if r.status_code == 429:
+            time.sleep(int(r.headers.get("Retry-After", 1)))
+            continue
+        r.raise_for_status()
+
+        body = r.json()
+        users += body["users"]
+        if not body["page"]["has_more"]:
+            return users
+        cursor = body["page"]["next_cursor"]
+
+print(sum(u["relation"]["is_subscriber"] for u in all_users()), "subscribers")</code></pre><button data-copy>Copy</button></div>
+
+  <h2 id="openapi">OpenAPI spec</h2>
+  <p>A machine-readable OpenAPI 3.1 description is available if you'd rather
+  generate a client, import into Postman or Insomnia, or drive contract tests:</p>
+  <div class="cw"><pre><code>{{BASE_URL}}/api/v1/openapi.json</code></pre><button data-copy>Copy</button></div>
+  <p><a href="{{BASE_URL}}/api/v1/openapi.json">Open the spec →</a></p>
+
+  <footer>
+    Kick Channel Role — a RoleLogic plugin. Questions about a specific server's
+    data or key belong to that server's managers; they mint and revoke keys
+    themselves.
+  </footer>
+</main>
+</div>
+
+<script>
+// Copy buttons. Uses the async clipboard API where available and falls back to
+// a temporary textarea, which works without a secure context.
+document.querySelectorAll('[data-copy]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var text = btn.parentNode.querySelector('code').innerText;
+    var done = function (ok) {
+      btn.textContent = ok ? 'Copied' : 'Press Ctrl+C';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+    };
+    var fallback = function () {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta); done(ok);
+      } catch (e) { done(false); }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+    } else { fallback(); }
+  });
+});
+
+// Highlight the section currently on screen in the sidebar.
+var links = [].slice.call(document.querySelectorAll('nav a'));
+var byId = {};
+links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+if ('IntersectionObserver' in window) {
+  var seen = {};
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { seen[e.target.id] = e.isIntersecting; });
+    var current = Object.keys(byId).filter(function (id) { return seen[id]; })[0];
+    if (!current) return;
+    links.forEach(function (a) { a.classList.remove('on'); });
+    byId[current].classList.add('on');
+  }, { rootMargin: '0px 0px -70% 0px' });
+  document.querySelectorAll('main [id]').forEach(function (el) { io.observe(el); });
+}
+</script>
+</body>
+</html>

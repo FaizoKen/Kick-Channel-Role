@@ -41,8 +41,10 @@ use crate::services::auth_gateway;
 use crate::AppState;
 
 /// Page size when the caller doesn't say, and the ceiling we'll honour.
-const DEFAULT_LIMIT: i64 = 100;
-const MAX_LIMIT: i64 = 500;
+/// `pub(super)` so `api_docs` can publish the same numbers it enforces —
+/// documented limits that drift from real ones are worse than none.
+pub(super) const DEFAULT_LIMIT: i64 = 100;
+pub(super) const MAX_LIMIT: i64 = 500;
 
 /// Every response carries this. The payload is per-guild private data — it
 /// must never land in a shared or intermediary cache.
@@ -56,13 +58,52 @@ fn private_json(body: Value) -> impl IntoResponse {
 
 /// Unauthenticated discovery document. Static text only — it describes the
 /// contract, it does not touch the database and reveals nothing about any
-/// guild. Having one means an integrator handed only a base URL can find
-/// their way without us writing a separate docs site.
-pub async fn index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// guild.
+///
+/// Content-negotiated: a browser (which asks for `text/html`) is sent to the
+/// human documentation, while `curl` and every HTTP client get the JSON. A
+/// developer who pastes the base URL into their address bar should land on
+/// something readable, not a wall of raw JSON.
+pub async fn index(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if wants_html(&headers) {
+        return axum::response::Redirect::temporary(&format!(
+            "{}/api/v1/docs",
+            state.config.base_url
+        ))
+        .into_response();
+    }
+    index_json(&state).into_response()
+}
+
+/// True when the client would rather have a page than a payload.
+///
+/// Deliberately crude: browsers send `text/html` early in `Accept` and
+/// ranked above `*/*`, while API clients send `*/*`, `application/json`, or
+/// no header at all. Full RFC 9110 q-value parsing would buy nothing here —
+/// the only cost of being wrong is a redirect to readable documentation.
+fn wants_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| {
+            a.split(',')
+                .map(|p| p.split(';').next().unwrap_or("").trim())
+                .any(|m| m == "text/html")
+        })
+}
+
+fn index_json(state: &Arc<AppState>) -> impl IntoResponse {
     let base = &state.config.base_url;
     private_json(json!({
         "service": "kick-channel-role",
         "version": "v1",
+        // Named first so anyone eyeballing this response finds the readable
+        // docs immediately instead of reverse-engineering the endpoint list.
+        "documentation": format!("{base}/api/v1/docs"),
+        "openapi": format!("{base}/api/v1/openapi.json"),
         "auth": {
             "scheme": "Authorization: Bearer kck_…",
             "note": "Keys are guild-scoped and minted by a server manager from \

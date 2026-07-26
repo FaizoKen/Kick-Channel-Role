@@ -227,6 +227,11 @@ async fn main() {
         // Read-only machine API. Bearer-authed by a guild-scoped API key;
         // no cookie, and no `guild_id` in any path — the key carries it.
         .route("/api/v1", get(routes::api_v1::index))
+        // Public docs: the page a third-party dev reads, and the spec their
+        // tooling reads. Credential-less on purpose — making someone
+        // authenticate to discover what the endpoints are helps nobody.
+        .route("/api/v1/docs", get(routes::api_docs::page))
+        .route("/api/v1/openapi.json", get(routes::api_docs::openapi))
         .route("/api/v1/whoami", get(routes::api_v1::whoami))
         .route("/api/v1/users", get(routes::api_v1::list_users))
         .route("/api/v1/users/{discord_id}", get(routes::api_v1::get_user))

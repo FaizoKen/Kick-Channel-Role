@@ -129,6 +129,19 @@ A server manager can hand another service read-only access to their server's
 linked Kick accounts, as JSON, without that service ever holding a user's
 login.
 
+**Developer documentation is served by the plugin itself** — send third-party
+integrators straight there rather than to this README:
+
+| | |
+|---|---|
+| Guide | `{BASE_URL}/api/v1/docs` — endpoints, field reference, pagination and incremental-sync recipes, error semantics, working curl/Node/Python samples |
+| Spec | `{BASE_URL}/api/v1/openapi.json` — OpenAPI 3.1, for Postman/Insomnia, client generators, contract tests |
+
+`GET /api/v1` content-negotiates: a browser is redirected to the guide, while
+curl and API clients get a JSON discovery document. Both docs endpoints are
+public and credential-less — making someone authenticate to find out what the
+endpoints *are* helps nobody, and neither response touches the database.
+
 **Why a key and not the session cookie.** `rl_session` is a whole-account
 browser credential — every server, every plugin — with a short TTL, no
 per-integration revocation and no audit trail. It also can't work
