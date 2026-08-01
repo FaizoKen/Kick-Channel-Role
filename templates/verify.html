@@ -106,12 +106,35 @@
       padding: 7px 13px; border-radius: 8px; transition: border-color .15s, color .15s;
     }
     a.channel-open:hover { border-color: var(--kick); color: var(--kick-hover); }
+
+    /* Step 4: per-channel status chips. */
+    .rel { padding: 11px 0; border-bottom: 1px solid var(--border); }
+    .rel:last-child { border-bottom: none; padding-bottom: 0; }
+    .rel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .rel-name { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .chip {
+      font-size: 11px; font-weight: 700; padding: 3px 9px;
+      border-radius: 999px; white-space: nowrap;
+    }
+    .chip.ok { background: rgba(83,212,154,.16); color: var(--kick); }
+    .chip.no { background: rgba(240,184,102,.14); color: #f0b866; }
+    .rel-hint { margin: 7px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+    .rel-hint a { color: var(--kick); font-weight: 600; text-decoration: none; }
+    .rel-hint a:hover { text-decoration: underline; }
+    .rel details { margin-top: 5px; }
+    .rel summary {
+      cursor: pointer; font-size: 12.5px; color: #8a93a4;
+      font-weight: 600; list-style: none;
+    }
+    .rel summary::-webkit-details-marker { display: none; }
+    .rel summary::before { content: "▸ "; }
+    .rel details[open] summary::before { content: "▾ "; }
   </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Get your Kick role</h1>
-  <p class="tagline">Everything's on this page. Follow (or subscribe to) the channel, link your accounts, and your Discord roles are assigned automatically — give it up to a minute after each step.</p>
+  <p class="tagline">Everything's on this page. Follow (or subscribe to) the channel, link your accounts, and your Discord roles are assigned automatically — give it up to a minute after each step. Step 4 shows exactly what we can see, so you're never left guessing.</p>
 
   <!-- Server context banner: only shown when ?guild=<id> is present in the URL.
        Lets a server admin share a per-guild verify link that both links the
@@ -121,14 +144,14 @@
     <span id="guild-ctx-text"></span>
   </div>
 
-  <!-- Step 1: follow / subscribe. Instructional — we can't confirm the user
-       actually followed (that signal comes later, via webhooks once they've
-       linked), so this card has no done/active state. It lists the channel(s)
-       this guild watches (from /verify/channels) with a link straight to
-       kick.com so the admin doesn't have to paste it separately. -->
+  <!-- Step 1: follow / subscribe. Instructional and unauthenticated, so it has
+       no done/active state — the confirmed answer lands in step 4 once the
+       member has linked and we've checked their status against Kick. It lists
+       the channel(s) this guild watches (from /verify/channels) with a link
+       straight to kick.com so the admin doesn't have to paste it separately. -->
   <div class="card step" id="step-follow">
     <div class="step-head"><span class="step-num">1</span> Follow or subscribe on Kick</div>
-    <p>Open the channel below and follow it — or subscribe, if the role you want needs a sub. New follows and subs are picked up automatically once your accounts are linked.</p>
+    <p>Open the channel below and follow it — or subscribe, if the role you want needs a sub. Already following? That's fine, just carry on — we check your real status in step 4.</p>
     <div class="channel-list" id="channel-list">
       <div class="status-line">Loading channel…</div>
     </div>
@@ -162,6 +185,20 @@
       Getting Kick roles in servers you didn't intend?
       <a href="/auth/my_servers?from=/kick-channel-role/verify">Choose which servers receive roles →</a>
     </p>
+  </div>
+
+  <!-- Step 4: what we can actually see. Linking used to be the last thing this
+       page told you about, so a member who already followed the channel before
+       linking saw nothing but green ticks and never learned why no role
+       arrived — Kick only reports a follow at the instant it happens, so an
+       older follow is invisible to us until we go looking for it. This card
+       shows the real per-channel answer and, when we can't get one, says so
+       plainly instead of implying the role is on its way. -->
+  <div class="card step" id="step-status" style="display:none;">
+    <div class="step-head"><span class="step-num">4</span> What we can see</div>
+    <div id="relations-body">
+      <div class="status-line">Checking your channel status…</div>
+    </div>
   </div>
 
   <p class="footer">
@@ -360,10 +397,14 @@ function renderStatus(s) {
     uBtn.style.display = '';
     if (rBtn) rBtn.style.display = '';
     if (mLink) mLink.style.display = '';
-    // Visiting the page re-pulls your latest channel relationship so roles
+    // Visiting the page re-checks your status against Kick so roles
     // self-correct without an unlink/re-link. Best-effort.
     refreshChannelData(true);
+    relPolls = 0;
+    loadRelations();
   } else {
+    const sCard = $('step-status');
+    if (sCard) sCard.style.display = 'none';
     stepK.classList.add('active');
     stepK.classList.remove('done');
     kStatus.classList.remove('linked');
@@ -395,8 +436,11 @@ async function refreshChannelData(silent) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || 'Request failed');
     note.style.color = 'var(--success)';
-    note.textContent = d.refreshed
-      ? '✓ Re-checking now — your roles update within a minute.'
+    // `probing` is the meaningful one: it means we're asking Kick about this
+    // member's actual follow/sub status, which is the only thing that can
+    // recover a relationship formed before they linked.
+    note.textContent = (d.probing || d.refreshed)
+      ? '✓ Re-checking with Kick — your roles update within a minute.'
       : '✓ Your status is already up to date.';
   } catch (e) {
     if (silent) {
@@ -407,13 +451,103 @@ async function refreshChannelData(silent) {
     }
   } finally {
     refreshing = false;
+    // Whatever happened, re-read the per-channel status so step 4 reflects it.
+    relPolls = 0;
+    loadRelations();
   }
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, c => (
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
     { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]
   ));
+}
+
+// ---------------------------------------------------------------------
+// Step 4: the member's real per-channel status.
+// ---------------------------------------------------------------------
+
+function relBadges(c) {
+  const out = [];
+  if (c.is_follower)   out.push('Following');
+  if (c.is_subscriber) out.push('Subscriber');
+  if (c.is_vip)        out.push('VIP');
+  if (c.is_og)         out.push('OG');
+  if (c.is_moderator)  out.push('Mod');
+  return out;
+}
+
+function renderRelation(c, probeEnabled) {
+  const name = escapeHtml(c.display_name || c.kick_slug || 'Kick channel');
+  const slug = encodeURIComponent(c.kick_slug || '');
+  const badges = relBadges(c);
+
+  if (badges.length) {
+    return '<div class="rel"><div class="rel-head">' +
+      '<span class="rel-name">' + name + '</span>' +
+      badges.map(b => '<span class="chip ok">✓ ' + escapeHtml(b) + '</span>').join('') +
+      '</div></div>';
+  }
+
+  // No relationship found. Distinguish "we checked and you don't follow" from
+  // "we couldn't check" — only the first justifies a flat "not following", and
+  // conflating them is what made this look like a broken plugin.
+  const confirmed = c.probed && probeEnabled;
+  const hint = confirmed
+    ? '<p class="rel-hint">Not following yet — ' +
+      '<a href="https://kick.com/' + slug + '" target="_blank" rel="noopener">follow on Kick →</a> ' +
+      'Your role is added automatically, usually within a minute.</p>'
+    : '<p class="rel-hint">' +
+      '<a href="https://kick.com/' + slug + '" target="_blank" rel="noopener">Open the channel on Kick →</a> ' +
+      'then press <em>Re-check now</em> above.' +
+      '<details><summary>Already following but it says no?</summary>' +
+      '<p class="rel-hint">Kick only tells us at the moment someone follows, so ' +
+      'a follow from before you linked can be invisible to us. Re-check first — ' +
+      'if it still doesn\'t show, unfollow and follow again on Kick and it ' +
+      'registers straight away.</p></details></p>';
+
+  return '<div class="rel"><div class="rel-head">' +
+    '<span class="rel-name">' + name + '</span>' +
+    '<span class="chip no">Not detected</span>' +
+    '</div>' + hint + '</div>';
+}
+
+let relPolls = 0;
+async function loadRelations() {
+  const card = $('step-status');
+  const body = $('relations-body');
+  if (!card || !body) return;
+  try {
+    const url = BASE_URL + '/verify/relations' +
+      (guildId ? ('?guild=' + encodeURIComponent(guildId)) : '');
+    const r = await fetch(url, { credentials: 'include', cache: 'no-store' });
+    if (!r.ok) throw new Error('status ' + r.status);
+    const d = await r.json();
+
+    if (!d.linked) { card.style.display = 'none'; return; }
+    card.style.display = '';
+
+    if (!d.channels || !d.channels.length) {
+      body.innerHTML = '<div class="status-line">No Kick channel is connected ' +
+        'to your servers yet, so there\'s nothing to check. Your link is saved.</div>';
+      return;
+    }
+
+    // Don't show a "not detected" we're about to contradict.
+    if (d.probing && relPolls < 18) {
+      relPolls++;
+      body.innerHTML = '<div class="status-line">Checking your follow and ' +
+        'subscriber status with Kick…</div>';
+      setTimeout(loadRelations, 2500);
+      return;
+    }
+
+    body.innerHTML = d.channels.map(c => renderRelation(c, d.probe_enabled)).join('');
+  } catch (e) {
+    // Non-fatal: the rest of the page still works.
+    body.innerHTML = '<div class="status-line">Couldn\'t load your channel ' +
+      'status right now. Try Re-check now.</div>';
+  }
 }
 
 // Step 1 ("follow / subscribe"): list the Kick channel(s) this server watches

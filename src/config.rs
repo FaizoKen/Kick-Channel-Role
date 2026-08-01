@@ -39,6 +39,29 @@ pub struct KickConfig {
     /// Kick application client_secret. Phase 3+: used in the OAuth 2.1 +
     /// PKCE flow for both broadcaster and viewer.
     pub client_secret: Option<String>,
+
+    /// Enable the follow probe (`KICK_FOLLOW_PROBE_ENABLED`, default on).
+    ///
+    /// The probe reads Kick's undocumented channel user-card endpoint to
+    /// recover follows that predate a member's link — state the *public* API
+    /// exposes no way to query. See [`crate::services::kick_probe`]. Set to
+    /// `false` to fall back to webhook-only behaviour if Kick ever objects or
+    /// the endpoint starts misbehaving; nothing else needs redeploying.
+    pub follow_probe_enabled: bool,
+    /// Origin the probe calls (`KICK_PROBE_BASE_URL`). Overridable so tests
+    /// and staging can point at a stub instead of the live site.
+    pub follow_probe_base_url: String,
+    /// Probe request budget per minute, per replica (`KICK_PROBE_RPM`).
+    /// Deliberately low: this is an undocumented endpoint being used
+    /// considerately, not a data-collection pipeline.
+    pub follow_probe_rpm: u32,
+    /// How many separately-spaced "not following" answers must agree before a
+    /// stored follow is removed (`KICK_UNFOLLOW_CONFIRMATIONS`, default 3).
+    /// Kick emits no unfollow event, so probes are the only way to ever clear
+    /// a stale follow — but a single bad read must never cost a member their
+    /// role, hence the confirmation count. Raise it to be even more cautious;
+    /// values below 1 are clamped to 1.
+    pub unfollow_confirmations: i16,
 }
 
 impl KickConfig {
@@ -52,6 +75,25 @@ impl KickConfig {
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            follow_probe_enabled: env::var("KICK_FOLLOW_PROBE_ENABLED")
+                .ok()
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+                .unwrap_or(true),
+            follow_probe_base_url: env::var("KICK_PROBE_BASE_URL")
+                .ok()
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://kick.com".to_string()),
+            follow_probe_rpm: env::var("KICK_PROBE_RPM")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(20),
+            unfollow_confirmations: env::var("KICK_UNFOLLOW_CONFIRMATIONS")
+                .ok()
+                .and_then(|v| v.parse::<i16>().ok())
+                .map(|n| n.max(1))
+                .unwrap_or(3),
         }
     }
 }

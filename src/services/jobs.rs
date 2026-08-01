@@ -28,6 +28,7 @@ pub enum JobKind {
     ConfigSync,
     ChannelSync,
     ChannelRefresh,
+    FollowProbe,
 }
 
 impl JobKind {
@@ -37,6 +38,7 @@ impl JobKind {
             Self::ConfigSync => "config_sync",
             Self::ChannelSync => "channel_sync",
             Self::ChannelRefresh => "channel_refresh",
+            Self::FollowProbe => "follow_probe",
         }
     }
     pub fn from_db(s: &str) -> Option<Self> {
@@ -45,6 +47,7 @@ impl JobKind {
             "config_sync" => Some(Self::ConfigSync),
             "channel_sync" => Some(Self::ChannelSync),
             "channel_refresh" => Some(Self::ChannelRefresh),
+            "follow_probe" => Some(Self::FollowProbe),
             _ => None,
         }
     }
@@ -232,4 +235,21 @@ where
 {
     let payload = json!({ "kick_channel_id": kick_channel_id });
     enqueue(executor, JobKind::ChannelRefresh, payload, 0).await
+}
+
+/// Probe one viewer's follow status across every channel they could hold a
+/// relationship with, then re-evaluate their roles if anything changed.
+///
+/// This is what makes verification actually check the member's status: the
+/// `channel.followed` webhook only fires on a fresh follow, so somebody who
+/// already followed before linking is invisible without it. Runs as a job
+/// rather than inline in the OAuth callback so a slow or unavailable probe
+/// can't stall the "You're linked!" redirect — the verify page polls for the
+/// result instead. Deduped at the call sites against an already-queued probe.
+pub async fn enqueue_follow_probe<'e, E>(executor: E, discord_id: &str) -> Result<(), AppError>
+where
+    E: PgExecutor<'e>,
+{
+    let payload = json!({ "discord_id": discord_id });
+    enqueue(executor, JobKind::FollowProbe, payload, 0).await
 }

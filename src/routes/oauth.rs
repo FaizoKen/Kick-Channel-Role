@@ -559,16 +559,34 @@ async fn viewer_callback_inner(
                 );
             }
 
-            // Kick exposes a viewer's follow/sub status only through the
-            // broadcaster-token list endpoints, so a user who *already* followed
-            // or subscribed before linking shows all-false until the next
-            // periodic reconcile — up to 6h away. Pull their channels' facts now
-            // via a channel_refresh (re-pulls membership, then fans out a
-            // channel_sync that re-evaluates roles). Deduped against any
-            // already-queued refresh and gated by the broadcaster's last
-            // reconcile, so a burst of linkers collapses to ~one reconcile per
-            // channel. Follows/subs made *after* linking arrive in real time via
-            // webhooks, so this only needs to cover the pre-link gap.
+            // Check this member's actual status against Kick right now,
+            // rather than assuming the webhook stream already knows them.
+            //
+            // This is the fix for "linked successfully but never got the
+            // role": `channel.followed` fires only on a fresh follow, so
+            // anybody who already followed before reaching this page produced
+            // no event and would otherwise sit at is_follower=false forever.
+            // The probe reads their real relationship (and recovers a
+            // pre-existing subscription / VIP / OG / mod badge the same way).
+            // See services::kick_probe for why it's best-effort.
+            if let Err(e) =
+                crate::services::jobs::enqueue_follow_probe(&state.pool, &row.discord_id).await
+            {
+                tracing::warn!(
+                    discord_id = %row.discord_id,
+                    "enqueue follow_probe at link failed: {e}"
+                );
+            }
+
+            // Separately, refresh the channels themselves: live state and
+            // lapsed-subscription expiry. Note this does NOT recover per-viewer
+            // membership — Kick's public API has no list endpoints, so
+            // reconcile_channel cannot see who follows. (An earlier version of
+            // this comment claimed it closed the pre-link gap; it never could.
+            // The follow probe above is what actually does that.) Deduped
+            // against any already-queued refresh and gated by the broadcaster's
+            // last reconcile, so a burst of linkers collapses to ~one refresh
+            // per channel.
             let channels: Vec<i64> = sqlx::query_scalar(
                 "SELECT gb.kick_channel_id \
                  FROM guild_broadcasters gb \

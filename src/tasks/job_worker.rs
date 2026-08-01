@@ -178,6 +178,18 @@ async fn dispatch(job: &Job, state: &Arc<AppState>) -> Result<(), JobError> {
                 ),
             }
         }
+        JobKind::FollowProbe => {
+            let discord_id = job
+                .payload
+                .get("discord_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| JobError::Terminal("follow_probe missing discord_id".into()))?;
+            // The probe never fails the job: an unreachable or changed
+            // endpoint is an expected, handled state (the verify page falls
+            // back to the guided re-follow flow), not something retrying will
+            // fix. Only genuine DB errors propagate.
+            crate::services::follow_sync::probe_and_apply_for_player(state, discord_id).await?;
+        }
     }
     Ok(())
 }

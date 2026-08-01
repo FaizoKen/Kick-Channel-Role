@@ -69,6 +69,7 @@ pub async fn run_migrations(pool: &PgPool) {
             include_str!("../migrations/011_channel_og_and_sub_expiry.sql"),
         ),
         ("012", include_str!("../migrations/012_guild_api_keys.sql")),
+        ("013", include_str!("../migrations/013_follow_probe.sql")),
     ];
     for (id, sql) in migrations {
         sqlx::raw_sql(sql)

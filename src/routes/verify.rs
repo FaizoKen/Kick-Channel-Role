@@ -242,12 +242,131 @@ pub async fn verify_refresh(
         crate::services::jobs::enqueue_channel_refresh(&state.pool, *cid).await?;
     }
 
+    // Re-check the member's real relationship to their channels. This is the
+    // part that can actually change a follower fact — `channel_refresh` only
+    // touches channel-level state, because Kick's public API exposes no
+    // per-viewer membership at all. Deduped so repeated clicks collapse into
+    // one in-flight probe rather than queueing a pile of them.
+    let probe_in_flight: bool = sqlx::query_scalar(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM jobs \
+             WHERE kind = 'follow_probe' \
+               AND status IN ('pending', 'in_progress') \
+               AND payload->>'discord_id' = $1 \
+         )",
+    )
+    .bind(&discord_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !probe_in_flight {
+        crate::services::jobs::enqueue_follow_probe(&state.pool, &discord_id).await?;
+    }
+    // Either way a probe is now running for this member — the page should show
+    // "checking…" rather than a status that's about to be superseded.
+    let probing = state.follow_probe.is_some();
+
     // Cheap immediate re-evaluation of this viewer's roles against current
     // cached facts. The channel_refresh above runs its own channel_sync once
-    // fresh facts land.
+    // fresh facts land, and the probe enqueues a player_sync of its own if it
+    // changed anything.
     crate::services::jobs::enqueue_player_sync(&state.pool, &discord_id).await?;
 
-    Ok(Json(json!({ "refreshed": !channels.is_empty() })))
+    Ok(Json(json!({
+        "refreshed": !channels.is_empty(),
+        "probing": probing,
+    })))
+}
+
+// ---------------------------------------------------------------------
+// GET /verify/relations?guild=<id> — what this member's status actually is
+// ---------------------------------------------------------------------
+
+/// Per-channel truth for the signed-in member, so the verify page can say
+/// "linked, but not following yet" instead of a green tick that means nothing.
+///
+/// The old flow ended at "You're linked!" and promised the role would arrive
+/// within a minute. For anyone who followed before linking that promise was
+/// simply false, and the page gave them no way to find out — which is how the
+/// bug reached members as "the plugin is broken" rather than "here's what to
+/// do next". This endpoint is the data behind fixing that.
+#[derive(sqlx::FromRow, Serialize)]
+struct RelationStatus {
+    kick_channel_id: i64,
+    kick_slug: String,
+    display_name: String,
+    is_follower: bool,
+    is_subscriber: bool,
+    is_vip: bool,
+    is_og: bool,
+    is_moderator: bool,
+    /// True once a probe has given a usable answer for this pair — lets the
+    /// page distinguish "confirmed not following" from "we couldn't check".
+    probed: bool,
+}
+
+pub async fn verify_relations(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Query(q): Query<ChannelsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let Ok((discord_id, _)) = read_session(&jar, &state.config.session_secret) else {
+        return Ok(Json(json!({ "signed_in": false })));
+    };
+
+    let linked: Option<(i64,)> =
+        sqlx::query_as("SELECT kick_user_id FROM kick_users WHERE discord_id = $1")
+            .bind(&discord_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some((kick_user_id,)) = linked else {
+        return Ok(Json(json!({ "signed_in": true, "linked": false })));
+    };
+
+    // Scope to one guild when the page was opened with ?guild=<id>; otherwise
+    // report every channel the member has a relation row for.
+    let guild_id = q.guild.unwrap_or_default();
+    let scoped = (5..=25).contains(&guild_id.len()) && guild_id.bytes().all(|b| b.is_ascii_digit());
+
+    let channels: Vec<RelationStatus> = sqlx::query_as(
+        "SELECT cr.kick_channel_id, b.kick_slug, b.display_name, \
+                cr.is_follower, cr.is_subscriber, cr.is_vip, cr.is_og, cr.is_moderator, \
+                (cr.follow_probed_at IS NOT NULL) AS probed \
+         FROM channel_relations cr \
+         JOIN broadcasters b USING (kick_channel_id) \
+         WHERE cr.kick_user_id = $1 \
+           AND ($2::text = '' OR EXISTS ( \
+                   SELECT 1 FROM guild_broadcasters gb \
+                   WHERE gb.guild_id = $2::text \
+                     AND gb.kick_channel_id = cr.kick_channel_id)) \
+         ORDER BY b.display_name \
+         LIMIT 50",
+    )
+    .bind(kick_user_id)
+    .bind(if scoped { guild_id.as_str() } else { "" })
+    .fetch_all(&state.pool)
+    .await?;
+
+    // Is a probe still in flight? The page shows "checking…" rather than a
+    // premature "you're not following".
+    let probing: bool = sqlx::query_scalar(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM jobs \
+             WHERE kind = 'follow_probe' \
+               AND status IN ('pending', 'in_progress') \
+               AND payload->>'discord_id' = $1 \
+         )",
+    )
+    .bind(&discord_id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok(Json(json!({
+        "signed_in": true,
+        "linked": true,
+        "probing": probing,
+        "probe_enabled": state.follow_probe.is_some(),
+        "channels": channels,
+    })))
 }
 
 // ---------------------------------------------------------------------

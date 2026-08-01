@@ -15,6 +15,7 @@
       --accent: #53d49a; /* Kick green */
       --accent-hover: #6fe0ae;
       --success: #58e1a2;
+      --warn: #f0b866;
     }
     * { box-sizing: border-box; }
     body {
@@ -50,6 +51,58 @@
     a.btn:hover { background: var(--accent-hover); }
     .small { margin-top: 18px; color: #6a7385; font-size: 12px; }
     .small a { color: #8a93a4; }
+
+    /* --- live status block --- */
+    .status {
+      margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border);
+      text-align: left;
+    }
+    .status-title {
+      font-size: 13px; font-weight: 700; letter-spacing: .03em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 10px;
+    }
+    .chan {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 11px 12px; border: 1px solid var(--border);
+      border-radius: 10px; margin-bottom: 8px; background: #12161e;
+    }
+    .chan-name { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .chip {
+      font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+      white-space: nowrap;
+    }
+    .chip.ok   { background: rgba(88,225,162,.16); color: var(--success); }
+    .chip.no   { background: rgba(240,184,102,.14); color: var(--warn); }
+    .chip.wait { background: rgba(154,163,178,.14); color: var(--muted); }
+    .chan-cta {
+      flex-basis: 100%; margin: 0; font-size: 12.5px; line-height: 1.5;
+    }
+    .chan-cta a { color: var(--accent); font-weight: 600; text-decoration: none; }
+    .chan-cta a:hover { text-decoration: underline; }
+    details { margin-top: 6px; }
+    summary {
+      cursor: pointer; font-size: 12.5px; color: #8a93a4; font-weight: 600;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::before { content: "▸ "; }
+    details[open] summary::before { content: "▾ "; }
+    details p { font-size: 12.5px; margin: 7px 0 0; }
+    button.recheck {
+      margin-top: 12px; width: 100%;
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 9px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+      font-family: inherit; transition: border-color .15s;
+    }
+    button.recheck:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    button.recheck:disabled { opacity: .5; cursor: default; }
+    .spin {
+      display: inline-block; width: 12px; height: 12px; vertical-align: -1px;
+      border: 2px solid rgba(154,163,178,.3); border-top-color: var(--muted);
+      border-radius: 50%; animation: spin .8s linear infinite; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -60,11 +113,150 @@
       <span class="name">{{KICK_USERNAME}}</span>
       is now connected to your Discord account.
     </p>
-    <p>Roles you qualify for arrive within a minute — give it time after subscribing / following. You can close this tab.</p>
+
+    <!-- Linking is only half the job. The page used to stop here and promise
+         "roles arrive within a minute", which was false for anyone who had
+         already followed the channel before linking: Kick only tells us about
+         a follow at the moment it happens, so an older follow was invisible
+         and no role ever came. That silent failure is what members reported.
+         Now we check their real status and say what's actually true. -->
+    <div class="status" id="status">
+      <div class="status-title">Your channel status</div>
+      <div id="status-body">
+        <p><span class="spin"></span>Checking your Kick status…</p>
+      </div>
+      <button class="recheck" id="recheck" type="button" style="display:none;">Re-check now</button>
+    </div>
+
     <a class="btn" href="{{BASE_URL}}/verify">Back to verification page</a>
     <p class="small">Kick user ID: {{KICK_USER_ID}} &middot;
        <a href="https://kick.com/{{KICK_SLUG}}" target="_blank" rel="noopener">View profile</a>
     </p>
   </div>
+
+<script>
+const BASE_URL = "{{BASE_URL}}";
+const body = document.getElementById('status-body');
+const recheckBtn = document.getElementById('recheck');
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]
+  ));
+}
+
+/** Relationships worth showing as "you qualify for something". */
+function held(c) {
+  const out = [];
+  if (c.is_follower)   out.push('Following');
+  if (c.is_subscriber) out.push('Subscriber');
+  if (c.is_vip)        out.push('VIP');
+  if (c.is_og)         out.push('OG');
+  if (c.is_moderator)  out.push('Mod');
+  return out;
+}
+
+function renderChannel(c, probeEnabled) {
+  const badges = held(c);
+  if (badges.length) {
+    return `<div class="chan">
+      <span class="chan-name">${esc(c.display_name || c.kick_slug)}</span>
+      ${badges.map(b => `<span class="chip ok">✓ ${esc(b)}</span>`).join('')}
+    </div>`;
+  }
+
+  // Nothing found. Be explicit about *why* nothing was found, because the
+  // honest answer differs: if a probe confirmed it, they genuinely don't
+  // follow; if we couldn't check, an old follow may simply be invisible to us
+  // and the re-follow trick is the only way to surface it.
+  const confirmed = c.probed && probeEnabled;
+  const hint = confirmed
+    ? `<p class="chan-cta">Not following yet —
+         <a href="https://kick.com/${esc(c.kick_slug)}" target="_blank" rel="noopener">follow on Kick →</a>
+         Your role is added automatically, usually within a minute.</p>`
+    : `<p class="chan-cta">
+         <a href="https://kick.com/${esc(c.kick_slug)}" target="_blank" rel="noopener">Open the channel on Kick →</a>
+         then use <em>Re-check now</em> below.
+         <details>
+           <summary>Already following but it says no?</summary>
+           <p>Kick only notifies us at the moment someone follows, so a follow
+              from before you linked can be invisible to us. Re-check first —
+              if it still doesn't show, unfollow and follow again on Kick and
+              it'll register straight away.</p>
+         </details>
+       </p>`;
+
+  return `<div class="chan">
+    <span class="chan-name">${esc(c.display_name || c.kick_slug)}</span>
+    <span class="chip no">Not detected</span>
+    ${hint}
+  </div>`;
+}
+
+function render(data) {
+  if (!data.linked) {
+    body.innerHTML = '<p>Link not found — try the verification page again.</p>';
+    return true;
+  }
+  if (!data.channels || !data.channels.length) {
+    body.innerHTML = `<p>No Kick channel is connected to your servers yet, so
+      there's nothing to check. Your link is saved — roles will apply once a
+      server admin connects their channel.</p>`;
+    return true;
+  }
+
+  // A probe still running means the answer below could still change. Keep the
+  // spinner rather than flashing a "not detected" we're about to contradict.
+  if (data.probing) {
+    body.innerHTML = '<p><span class="spin"></span>Checking your follow and subscriber status with Kick…</p>';
+    return false;
+  }
+
+  body.innerHTML = data.channels.map(c => renderChannel(c, data.probe_enabled)).join('');
+  recheckBtn.style.display = 'block';
+  return true;
+}
+
+let polls = 0;
+async function poll() {
+  try {
+    const r = await fetch(BASE_URL + '/verify/relations', {
+      credentials: 'include', cache: 'no-store'
+    });
+    if (!r.ok) throw new Error('status ' + r.status);
+    const data = await r.json();
+    const settled = render(data);
+    // Give the queued probe a reasonable window (~45s) before showing whatever
+    // we have. Past that, the fallback copy above covers us.
+    if (!settled && ++polls < 18) {
+      setTimeout(poll, 2500);
+    } else if (!settled) {
+      render(Object.assign({}, data, { probing: false }));
+    }
+  } catch (e) {
+    body.innerHTML = `<p>Couldn't load your status right now.
+      <a href="${BASE_URL}/verify">Open the verification page →</a></p>`;
+  }
+}
+
+recheckBtn.addEventListener('click', async () => {
+  recheckBtn.disabled = true;
+  recheckBtn.textContent = 'Checking…';
+  body.innerHTML = '<p><span class="spin"></span>Asking Kick again…</p>';
+  try {
+    await fetch(BASE_URL + '/verify/refresh', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (e) { /* fall through to the poll, which reports what it can */ }
+  polls = 0;
+  await new Promise(r => setTimeout(r, 1200));
+  await poll();
+  recheckBtn.disabled = false;
+  recheckBtn.textContent = 'Re-check now';
+});
+
+poll();
+</script>
 </body>
 </html>

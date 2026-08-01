@@ -28,6 +28,14 @@ use crate::AppState;
 const TICK: Duration = Duration::from_secs(6 * 60 * 60);
 /// Run a first reconcile shortly after boot, then every TICK.
 const INITIAL_DELAY: Duration = Duration::from_secs(90);
+/// Viewers re-checked per reconcile cycle by the follow sweep. At 4 cycles a
+/// day this revisits 800 viewers/day — comfortably ahead of the 3-day recheck
+/// window for a normal-sized server, while keeping probe traffic modest.
+const SWEEP_BATCH: i64 = 200;
+/// Viewers backfilled per cycle. Larger than the sweep batch because this is a
+/// finite backlog we want cleared quickly, not an ongoing cost — at 4 cycles a
+/// day it drains 2000 viewers/day and then stops matching rows entirely.
+const BACKFILL_BATCH: i64 = 500;
 
 pub async fn run(state: Arc<AppState>, mut shutdown: ShutdownGuard) {
     tracing::info!("Reconcile worker started");
@@ -40,6 +48,27 @@ pub async fn run(state: Arc<AppState>, mut shutdown: ShutdownGuard) {
     let mut interval = tokio::time::interval(TICK);
     loop {
         gc(&state).await;
+
+        // Recover viewers whose relationship has never been read successfully
+        // — everyone who linked before the probe existed, plus anyone whose
+        // probe failed at link time. This is what stops a member who followed
+        // before linking from staying broken until they happen to revisit the
+        // verify page. Self-draining: rows leave the set once probed.
+        if let Err(e) =
+            crate::services::follow_sync::backfill_unprobed(&state, BACKFILL_BATCH).await
+        {
+            tracing::warn!("follow backfill failed: {e}");
+        }
+
+        // Re-verify follows we haven't checked lately. Kick sends no unfollow
+        // event, so without this a member who unfollows keeps the role
+        // forever. Bounded per cycle — the probe hits an undocumented endpoint
+        // and must stay a trickle, not a crawl — and removal still requires
+        // several spaced negatives, so an outage here costs nobody a role.
+        if let Err(e) = crate::services::follow_sync::sweep_stale_follows(&state, SWEEP_BATCH).await
+        {
+            tracing::warn!("follow sweep failed: {e}");
+        }
 
         if let Some(client) = build_client(&state) {
             let channels: Vec<i64> = sqlx::query_scalar("SELECT kick_channel_id FROM broadcasters")

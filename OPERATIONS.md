@@ -42,15 +42,88 @@ Background work is a durable `jobs` table (`player_sync`, `config_sync`,
 
 ## Common incidents
 
+**"I linked my Kick account but never got the role"** — the classic report,
+and almost always a member who **already followed before linking**.
+
+Kick's public API cannot answer "does user X follow channel Y": no follower
+list, no per-user lookup, no follow flag on any event. The only official
+signal is `channel.followed`, which fires *only on a fresh follow*. Someone
+who followed last month and links today generates no event at all, so
+`is_follower` stays false. (This is why the folklore workaround is "unfollow
+and follow again" — that recreates the transition.)
+
+The **follow probe** exists to fix exactly this and runs automatically at
+link time and on "Re-check now". To diagnose:
+
+```sql
+-- Has this member been probed, and what did it conclude?
+SELECT b.kick_slug, cr.is_follower, cr.followed_at,
+       cr.follow_probed_at, cr.follow_confirmed_at, cr.follow_probe_misses
+  FROM channel_relations cr
+  JOIN broadcasters b USING (kick_channel_id)
+  JOIN kick_users ku USING (kick_user_id)
+ WHERE ku.discord_id = '<discord_id>';
+```
+
+- `follow_probed_at` NULL → no probe has landed. Check `jobs` for a
+  `follow_probe` row (`payload->>'discord_id'`) and its `last_error`, and
+  confirm `KICK_FOLLOW_PROBE_ENABLED` isn't false. Members in this state are
+  picked up automatically by the backfill (below) — they don't have to
+  revisit the verify page.
+- `follow_probed_at` set but `is_follower` false → Kick genuinely reported no
+  follow. Have them follow the channel; the webhook handles the rest.
+- Repeated `follow probe returned no usable answer` warnings in the logs →
+  the undocumented endpoint is blocked or changed shape. Nothing breaks:
+  webhooks still work and the verify page guides members through a re-follow.
+  Nobody loses a role — a probe that can't answer never writes.
+
 **Roles not updating after a sub/follow on Kick**
 1. Did the webhook arrive? `SELECT * FROM webhook_deliveries ORDER BY received_at DESC LIMIT 20;`
    - Empty → Kick isn't delivering. Check the app's webhook URL in the Kick
-     developer portal and that `KICK_WEBHOOK_SECRET` matches.
+     developer portal and that the subscriptions exist
+     (`SELECT * FROM webhook_subscriptions;`).
 2. Webhook arrived but no role change → check `jobs` for a failed
    `player_sync`/`channel_sync` and its `last_error`.
-3. Regardless of webhooks, the **reconcile worker** rebuilds membership
-   facts every 6h and fans out `channel_sync`. To force it, restart a
-   replica (reconcile runs ~90s after boot).
+3. The **reconcile worker** runs every 6h: it refreshes channel live state,
+   expires lapsed subs, self-heals webhook subscriptions and enqueues the
+   follow sweep. Note it does **not** rebuild per-viewer membership — it
+   can't, since Kick exposes no list endpoints. Recovering a viewer's
+   relationship is the follow probe's job, not this worker's. To force a
+   cycle, restart a replica (reconcile runs ~90s after boot).
+
+**Backfilling members who linked before the probe shipped**
+
+Nothing to run — the reconcile worker drains this automatically. Every cycle
+(~90s after boot, then every 6h) it enqueues probes for up to 500 viewers
+whose relationships have never been successfully read, oldest attempt first.
+Rows leave the backlog as soon as one probe answers in either direction, so
+the work stops on its own; failed probes are retried after 24h.
+
+Watch it drain:
+
+```sql
+-- Remaining backlog. Should fall to 0 and stay there.
+SELECT count(*) FILTER (WHERE follow_probed_at IS NULL)        AS never_probed,
+       count(*) FILTER (WHERE follow_probed_at IS NOT NULL)    AS probed,
+       count(*) FILTER (WHERE is_follower)                     AS followers
+  FROM channel_relations;
+```
+
+Log line: `follow backfill enqueued probes for never-checked viewers`
+(with `count`). If `never_probed` stalls above 0 while that line keeps
+appearing, probes are being attempted but never answered — see the
+"no usable answer" note above; run at `RUST_LOG=kick_channel_role=debug` and
+grep `follow probe unavailable` for the reason.
+
+To force a pass without waiting 6h, restart a replica.
+
+**A member lost their follower role unexpectedly** — check
+`follow_probe_misses` and `follow_confirmed_at` above. Removal requires
+`KICK_UNFOLLOW_CONFIRMATIONS` (default 3) separate probes, each at least 6h
+apart, all reporting "not following"; errors and unreachable responses never
+count. If they insist they still follow, that's a probe accuracy bug — set
+`KICK_FOLLOW_PROBE_ENABLED=false` to stop removals immediately, then
+investigate.
 
 **`auth_gateway … returned 401`** — `INTERNAL_API_KEY` doesn't match the
 Auth Gateway's value. Sync workers can't scope by guild until fixed

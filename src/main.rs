@@ -57,6 +57,12 @@ pub struct AppState {
     /// integration can't spend another's budget, and so a NAT'd caller isn't
     /// throttled by whoever shares its egress IP.
     pub api_rate_limiter: services::api_key::KeyRateLimiter,
+    /// Recovers follows that predate a member's link — the one thing the
+    /// `channel.followed` webhook structurally cannot tell us, because it only
+    /// fires on a fresh follow transition. `None` when disabled via
+    /// `KICK_FOLLOW_PROBE_ENABLED=false`, in which case every call site
+    /// degrades to the guided re-follow flow. See [`services::kick_probe`].
+    pub follow_probe: Option<services::kick_probe::FollowProbe>,
 }
 
 #[tokio::main]
@@ -105,6 +111,25 @@ async fn main() {
 
     let worker_concurrency = app_config.worker_concurrency.max(1);
 
+    let follow_probe = if app_config.kick.follow_probe_enabled {
+        tracing::info!(
+            base = %app_config.kick.follow_probe_base_url,
+            rpm = app_config.kick.follow_probe_rpm,
+            unfollow_confirmations = app_config.kick.unfollow_confirmations,
+            "Follow probe enabled (recovers follows made before linking)"
+        );
+        Some(services::kick_probe::FollowProbe::new(
+            app_config.kick.follow_probe_base_url.clone(),
+            app_config.kick.follow_probe_rpm,
+        ))
+    } else {
+        tracing::warn!(
+            "Follow probe disabled — members who followed before linking will \
+             have to unfollow and re-follow to be detected"
+        );
+        None
+    };
+
     let state = Arc::new(AppState {
         pool,
         config: app_config,
@@ -115,6 +140,7 @@ async fn main() {
         jobs_notify: Arc::new(tokio::sync::Notify::new()),
         kick_public_key: tokio::sync::RwLock::new(None),
         api_rate_limiter: services::api_key::new_rate_limiter(),
+        follow_probe,
     });
 
     // Drop per-key rate-limit buckets for integrations that have gone quiet,
@@ -241,6 +267,7 @@ async fn main() {
         .route("/verify", get(routes::verify::verify_page))
         .route("/verify/channels", get(routes::verify::verify_channels))
         .route("/verify/status", get(routes::verify::verify_status))
+        .route("/verify/relations", get(routes::verify::verify_relations))
         .route("/verify/login", post(routes::verify::verify_login))
         .route("/verify/kick", post(routes::verify::verify_kick))
         .route("/verify/refresh", post(routes::verify::verify_refresh))
