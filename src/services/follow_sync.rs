@@ -355,6 +355,18 @@ const RECHECK_AFTER_SECS: f64 = 3.0 * 24.0 * 60.0 * 60.0;
 /// backfill into a retry storm, short enough to recover within a day.
 const BACKFILL_RETRY_AFTER_SECS: f64 = 24.0 * 60.0 * 60.0;
 
+/// Seconds to leave between successive probe jobs in a bulk batch.
+///
+/// Derived from the configured probe budget so the queue becomes runnable at
+/// roughly the rate it can actually drain. Without this, a batch of several
+/// hundred immediately-runnable probes pins every job worker on the rate
+/// limiter for the length of the batch and delays role assignment behind it —
+/// see [`crate::services::jobs::enqueue_follow_probe_after`]. Total drain time
+/// is unchanged; what changes is that workers stay available meanwhile.
+fn batch_spacing_secs(rpm: u32) -> u64 {
+    (60 / rpm.max(1) as u64).max(1)
+}
+
 /// Enqueue follow probes for the least-recently-checked viewers.
 ///
 /// Called from the reconcile worker. Bounded per run so the sweep can never
@@ -392,8 +404,12 @@ pub async fn sweep_stale_follows(
     .fetch_all(&state.pool)
     .await?;
 
-    for discord_id in &discord_ids {
-        if let Err(e) = crate::services::jobs::enqueue_follow_probe(&state.pool, discord_id).await {
+    let spacing = batch_spacing_secs(state.config.kick.follow_probe_rpm);
+    for (i, discord_id) in discord_ids.iter().enumerate() {
+        let delay = i as u64 * spacing;
+        if let Err(e) =
+            crate::services::jobs::enqueue_follow_probe_after(&state.pool, discord_id, delay).await
+        {
             tracing::warn!(discord_id = %discord_id, "enqueue follow_probe (sweep) failed: {e}");
         }
     }
@@ -451,8 +467,12 @@ pub async fn backfill_unprobed(state: &Arc<AppState>, max_viewers: i64) -> Resul
     .fetch_all(&state.pool)
     .await?;
 
-    for discord_id in &discord_ids {
-        if let Err(e) = crate::services::jobs::enqueue_follow_probe(&state.pool, discord_id).await {
+    let spacing = batch_spacing_secs(state.config.kick.follow_probe_rpm);
+    for (i, discord_id) in discord_ids.iter().enumerate() {
+        let delay = i as u64 * spacing;
+        if let Err(e) =
+            crate::services::jobs::enqueue_follow_probe_after(&state.pool, discord_id, delay).await
+        {
             tracing::warn!(discord_id = %discord_id, "enqueue follow_probe (backfill) failed: {e}");
         }
     }
@@ -1163,6 +1183,74 @@ mod tests {
         );
 
         cleanup(pool).await;
+    }
+
+    #[test]
+    fn batch_spacing_tracks_the_probe_budget() {
+        // Spacing must match the drain rate, or the queue either starves
+        // workers (too fast) or wastes the budget (too slow).
+        assert_eq!(batch_spacing_secs(20), 3, "20/min ⇒ one every 3s");
+        assert_eq!(batch_spacing_secs(60), 1);
+        assert_eq!(batch_spacing_secs(120), 1, "never below 1s");
+        assert_eq!(batch_spacing_secs(1), 60);
+        assert_eq!(batch_spacing_secs(0), 60, "0 rpm must not divide by zero");
+    }
+
+    /// A staggered batch must not be runnable all at once — that is the whole
+    /// point. `claim_batch` only takes rows with `next_run_at <= now()`, so a
+    /// batch dumped without delays pins every worker on the rate limiter and
+    /// stalls the `player_sync` jobs that actually assign roles.
+    #[tokio::test]
+    async fn staggered_batch_does_not_flood_the_runnable_queue() {
+        dotenvy::dotenv().ok();
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("DATABASE_URL unset — skipping stagger check");
+            return;
+        };
+        let Ok(pool) = sqlx::PgPool::connect(&url).await else {
+            eprintln!("database unreachable — skipping stagger check");
+            return;
+        };
+        crate::db::run_migrations(&pool).await;
+
+        const WHO: &str = "test-stagger-discord-9003";
+        let clean = |p: sqlx::PgPool| async move {
+            let _ = sqlx::query("DELETE FROM jobs WHERE payload->>'discord_id' = $1")
+                .bind(WHO)
+                .execute(&p)
+                .await;
+        };
+        clean(pool.clone()).await;
+
+        let spacing = batch_spacing_secs(20);
+        for i in 0..10u64 {
+            crate::services::jobs::enqueue_follow_probe_after(&pool, WHO, i * spacing)
+                .await
+                .expect("enqueue");
+        }
+
+        let runnable: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE payload->>'discord_id' = $1 \
+               AND status = 'pending' AND next_run_at <= now()",
+        )
+        .bind(WHO)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let total: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM jobs WHERE payload->>'discord_id' = $1")
+                .bind(WHO)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(total, 10, "all jobs enqueued");
+        assert_eq!(
+            runnable, 1,
+            "only the head of a staggered batch may be runnable immediately"
+        );
+
+        clean(pool).await;
     }
 
     #[test]

@@ -250,6 +250,27 @@ pub async fn enqueue_follow_probe<'e, E>(executor: E, discord_id: &str) -> Resul
 where
     E: PgExecutor<'e>,
 {
+    enqueue_follow_probe_after(executor, discord_id, 0).await
+}
+
+/// Same, but not runnable until `delay_secs` from now.
+///
+/// Bulk callers (the backfill and the staleness sweep) use this to spread a
+/// batch across the window it will take to drain anyway. Probes are throttled
+/// to `KICK_PROBE_RPM`, so a worker that claims one spends most of its time
+/// parked on the rate limiter — and `claim_batch` orders by id, so several
+/// hundred immediately-runnable probes will hold every worker and stall the
+/// `player_sync` jobs that actually assign roles (including the ones the
+/// probes themselves enqueue on success). Staggering costs nothing in total
+/// throughput and keeps workers free for latency-sensitive work.
+pub async fn enqueue_follow_probe_after<'e, E>(
+    executor: E,
+    discord_id: &str,
+    delay_secs: u64,
+) -> Result<(), AppError>
+where
+    E: PgExecutor<'e>,
+{
     let payload = json!({ "discord_id": discord_id });
-    enqueue(executor, JobKind::FollowProbe, payload, 0).await
+    enqueue(executor, JobKind::FollowProbe, payload, delay_secs).await
 }
