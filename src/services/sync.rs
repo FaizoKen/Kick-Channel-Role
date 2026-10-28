@@ -6,7 +6,9 @@
 //! `/auth/internal/*`, never a local JOIN. Convention 40: gateway HTTP
 //! failures bubble up (the worker retries) — we never clear a role on a
 //! transient lookup failure. Convention 47: a RoleLinkNotFound deletes the
-//! orphan local row instead of retrying forever.
+//! orphan local row instead of retrying forever. A disabled or paused link is
+//! skipped, and a write RoleLogic holds for owner confirmation is re-checked
+//! on a timer (`recheck_held`); both are expected states, not job failures.
 
 use std::collections::HashSet;
 
@@ -252,6 +254,9 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
                                 tracing::warn!(g, r, did, limit, "user limit reached");
                                 return;
                             }
+                            // Disabled or paused upstream; the next sync after
+                            // the owner turns it back on recomputes it.
+                            Err(AppError::RoleLinkDisabled) => return,
                             Err(e) => {
                                 tracing::error!(g, r, did, "add_user failed: {e}");
                                 return;
@@ -274,6 +279,7 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
                                 delete_orphan_role_link(&g, &r, &pool).await;
                                 return;
                             }
+                            Err(AppError::RoleLinkDisabled) => return,
                             Err(e) => {
                                 tracing::error!(g, r, did, "remove_user failed: {e}");
                                 return;
@@ -426,6 +432,8 @@ pub async fn sync_for_role_link(
             delete_orphan_role_link(guild_id, role_id, pool).await;
             return Ok(());
         }
+        Err(AppError::RoleLinkDisabled) => return Ok(()),
+        Err(AppError::RemovalHeld) => return recheck_held(guild_id, role_id, pool).await,
         Err(e) => return Err(e),
     }
 
@@ -479,6 +487,8 @@ async fn drain_to_empty(
             delete_orphan_role_link(guild_id, role_id, &state.pool).await;
             return Ok(());
         }
+        Err(AppError::RoleLinkDisabled) => return Ok(()),
+        Err(AppError::RemovalHeld) => return recheck_held(guild_id, role_id, &state.pool).await,
         Err(e) => return Err(e),
     }
     sqlx::query("DELETE FROM role_assignments WHERE guild_id=$1 AND role_id=$2")
@@ -504,6 +514,26 @@ pub async fn sync_for_channel(kick_channel_id: i64, state: &AppState) -> Result<
         jobs::enqueue_config_sync(&state.pool, &guild_id, &role_id).await?;
     }
     Ok(())
+}
+
+/// How soon a held write is tried again. Confirming the removals in the
+/// RoleLogic dashboard lets the next write through for an hour, and this
+/// plugin otherwise re-syncs a link only every few hours, so it comes back
+/// well inside that hour.
+const HELD_RECHECK_SECS: u64 = 20 * 60;
+
+/// RoleLogic is holding this link's write until an owner confirms the
+/// removals (Safe Apply's shrink gate). That is a decision waiting on a
+/// person, not a failure: leave the local mirror as it was and look again
+/// later, recomputing the list then.
+async fn recheck_held(guild_id: &str, role_id: &str, pool: &sqlx::PgPool) -> Result<(), AppError> {
+    tracing::info!(
+        guild_id,
+        role_id,
+        "RoleLogic is holding this link's removals for owner confirmation; re-checking in {} min",
+        HELD_RECHECK_SECS / 60
+    );
+    jobs::enqueue_config_sync_unless_queued(pool, guild_id, role_id, HELD_RECHECK_SECS).await
 }
 
 /// Delete a role_link the RoleLogic API reports as gone (Convention 47).
