@@ -53,6 +53,10 @@ pub struct AppState {
     /// `GET /public/v1/public-key` on the first delivery and cached.
     /// The ingestor refetches once on a signature miss to survive rotation.
     pub kick_public_key: tokio::sync::RwLock<Option<rsa::RsaPublicKey>>,
+    /// When a signature miss last forced that refetch. Anyone can send a bad
+    /// signature, so the ingestor spaces refetches out instead of calling
+    /// Kick once per forged request.
+    pub kick_public_key_refetched_at: tokio::sync::Mutex<Option<std::time::Instant>>,
     /// Per-API-key quota for `/api/v1/*`. Keyed on the key's row id so one
     /// integration can't spend another's budget, and so a NAT'd caller isn't
     /// throttled by whoever shares its egress IP.
@@ -139,6 +143,7 @@ async fn main() {
         draining: AtomicBool::new(false),
         jobs_notify: Arc::new(tokio::sync::Notify::new()),
         kick_public_key: tokio::sync::RwLock::new(None),
+        kick_public_key_refetched_at: tokio::sync::Mutex::new(None),
         api_rate_limiter: services::api_key::new_rate_limiter(),
         follow_probe,
     });
@@ -261,8 +266,6 @@ async fn main() {
         .route("/api/v1/whoami", get(routes::api_v1::whoami))
         .route("/api/v1/users", get(routes::api_v1::list_users))
         .route("/api/v1/users/{discord_id}", get(routes::api_v1::get_user))
-        // Kick webhook ingestor (single app-wide URL)
-        .route("/webhooks/kick", post(routes::webhooks::kick_webhook))
         // Member verification
         .route("/verify", get(routes::verify::verify_page))
         .route("/verify/channels", get(routes::verify::verify_channels))
@@ -312,7 +315,9 @@ async fn main() {
 
     // Per-IP rate limiter. Burst of 20 absorbs UI bursts; sustained 5/sec is
     // far higher than any legitimate human usage but low enough to choke
-    // floods. Per-route tightening (e.g. webhook ingestor) is a later phase.
+    // floods. tower_governor's `per_second(n)` means one request every n
+    // seconds, so 5/sec is `per_millisecond(200)`. Kick's webhook stream is
+    // not behind it (see the router below).
     //
     // SmartIpKeyExtractor pulls the client IP from `Forwarded` / `X-Forwarded-For`
     // / `X-Real-IP`. **The reverse proxy in front of this service MUST overwrite
@@ -320,9 +325,19 @@ async fn main() {
     // this by default) — otherwise an attacker can spoof per-IP buckets.
     let governor_config = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(5)
+            .per_millisecond(200)
             .burst_size(20)
             .key_extractor(SmartIpKeyExtractor)
+            // A rejection is answered before the request body is read, so
+            // hyper closes the connection after it. Say so: without
+            // `Connection: close`, cloudflared puts the socket back in its
+            // pool and the next request it sends on it fails with a 502.
+            .error_handler(|mut err| {
+                let mut res = err.as_response::<axum::body::Body>();
+                res.headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                res
+            })
             .finish()
             .expect("Failed to build governor config"),
     );
@@ -346,6 +361,19 @@ async fn main() {
 
     let request_id_header = HeaderName::from_static("x-request-id");
 
+    // `layer` only wraps routes added before it, so the webhook route added
+    // after the governor is the one route it does not limit. Kick delivers
+    // every event for every subscribed channel from a handful of egress IPs —
+    // chat messages included — so a per-IP quota would cap the whole stream
+    // at the quota times that handful and 429 the rest. Its gate is the RSA
+    // signature, checked before anything is written.
+    let plugin_routes = plugin_routes
+        .layer(GovernorLayer {
+            config: governor_config,
+        })
+        // Kick webhook ingestor (single app-wide URL)
+        .route("/webhooks/kick", post(routes::webhooks::kick_webhook));
+
     let app = Router::new()
         .nest("/kick-channel-role", plugin_routes)
         .layer(DefaultBodyLimit::max(256 * 1024))
@@ -354,9 +382,6 @@ async fn main() {
         .layer(sensitive_request_headers)
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
         .layer(cors_layer)
-        .layer(GovernorLayer {
-            config: governor_config,
-        })
         .layer(middleware::from_fn(security_headers::baseline))
         .layer(CompressionLayer::new().br(true).gzip(true))
         .with_state(Arc::clone(&state));

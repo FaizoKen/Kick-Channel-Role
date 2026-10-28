@@ -222,7 +222,7 @@ pub async fn role_config_page(
         Some(token) if !token.is_empty() => {
             match verify_iframe_entry(&state, &guild_id, &role_id, token).await {
                 Ok((t, ro)) => (Some(t), ro),
-                Err(resp) => return resp,
+                Err(resp) => return *resp,
             }
         }
         _ => (None, false),
@@ -276,26 +276,27 @@ pub async fn role_config_page(
 
 /// Verify `?rl_token=…` (Convention 43: six checks, in order) and return a
 /// freshly minted iframe-session token. On failure returns a rendered error
-/// page so the iframe shows something useful instead of an empty body.
+/// page (boxed: a `Response` is large) so the iframe shows something useful
+/// instead of an empty body.
 async fn verify_iframe_entry(
     state: &AppState,
     guild_id: &str,
     role_id: &str,
     rl_token_str: &str,
-) -> Result<(String, bool), Response> {
+) -> Result<(String, bool), Box<Response>> {
     let api_token: Option<String> =
         sqlx::query_scalar("SELECT api_token FROM role_links WHERE guild_id = $1 AND role_id = $2")
             .bind(guild_id)
             .bind(role_id)
             .fetch_optional(&state.pool)
             .await
-            .map_err(|e| render_inline_error(state, &format!("Database error: {e}")))?;
+            .map_err(|e| Box::new(render_inline_error(state, &format!("Database error: {e}"))))?;
 
     let Some(api_token) = api_token else {
-        return Err(render_inline_error(
+        return Err(Box::new(render_inline_error(
             state,
             "This role link isn't registered with this plugin yet.",
-        ));
+        )));
     };
 
     let verified =
@@ -310,15 +311,15 @@ async fn verify_iframe_entry(
                 rl_token::RlTokenError::WrongAudience => "Token is for a different plugin.",
                 rl_token::RlTokenError::WrongIssuer => "Token was not issued by RoleLogic.",
             };
-            render_inline_error(state, msg)
+            Box::new(render_inline_error(state, msg))
         })?;
 
     // Cross-check claims vs path (Convention 43 step 6).
     if verified.guild_id != guild_id || verified.role_id != role_id {
-        return Err(render_inline_error(
+        return Err(Box::new(render_inline_error(
             state,
             "Token does not match this role link.",
-        ));
+        )));
     }
 
     if verified.read_only {

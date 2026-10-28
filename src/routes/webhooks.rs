@@ -21,6 +21,7 @@
 //!     booleans (set AND clear) from it.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -40,13 +41,25 @@ const H_TIMESTAMP: &str = "kick-event-message-timestamp";
 const H_SIGNATURE: &str = "kick-event-signature";
 const H_EVENT_TYPE: &str = "kick-event-type";
 
+/// Least time between forced key refetches. This route is outside the per-IP
+/// limiter, so a signature miss must not cost a call to Kick every time; a
+/// real rotation is still picked up within this window.
+const FORCED_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Get Kick's signing key from the AppState cache, fetching it on first use.
-/// `force` bypasses the cache (signature-miss path: key may have rotated).
+/// `force` bypasses the cache (signature-miss path: key may have rotated),
+/// at most once per `FORCED_REFETCH_INTERVAL`; `None` inside that window.
 async fn signing_key(state: &Arc<AppState>, force: bool) -> Option<rsa::RsaPublicKey> {
     if !force {
         if let Some(k) = state.kick_public_key.read().await.as_ref() {
             return Some(k.clone());
         }
+    } else {
+        let mut last = state.kick_public_key_refetched_at.lock().await;
+        if last.is_some_and(|at| at.elapsed() < FORCED_REFETCH_INTERVAL) {
+            return None;
+        }
+        *last = Some(Instant::now());
     }
     match kick::fetch_public_key(&state.http).await {
         Ok(k) => {

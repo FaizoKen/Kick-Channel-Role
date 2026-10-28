@@ -889,6 +889,7 @@ mod tests {
             draining: std::sync::atomic::AtomicBool::new(false),
             jobs_notify: Arc::new(tokio::sync::Notify::new()),
             kick_public_key: tokio::sync::RwLock::new(None),
+            kick_public_key_refetched_at: tokio::sync::Mutex::new(None),
             api_rate_limiter: crate::services::api_key::new_rate_limiter(),
             follow_probe: Some(crate::services::kick_probe::FollowProbe::new(
                 stub_base, 600,
@@ -1064,6 +1065,7 @@ mod tests {
             draining: std::sync::atomic::AtomicBool::new(false),
             jobs_notify: Arc::new(tokio::sync::Notify::new()),
             kick_public_key: tokio::sync::RwLock::new(None),
+            kick_public_key_refetched_at: tokio::sync::Mutex::new(None),
             api_rate_limiter: crate::services::api_key::new_rate_limiter(),
             // Base URL is irrelevant here: we only exercise selection, not the
             // HTTP call. It must be Some, or the backfill short-circuits.
