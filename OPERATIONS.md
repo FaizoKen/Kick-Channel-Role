@@ -190,6 +190,9 @@ means someone else was using it.
 
 - `WORKER_CONCURRENCY` scales sync throughput linearly until DB-pool
   saturation. Budget `replicas * DB_MAX_CONNECTIONS ≤ pgBouncer pool`.
+- Each pooled connection keeps up to 100 prepared statements
+  (`STATEMENT_CACHE_CAPACITY` in `src/db.rs`). In transaction-pool mode,
+  pgBouncer must be 1.21+ with `max_prepared_statements` ≥ 100.
 - `live_poll` costs **zero** Kick calls when nobody is live (partial index
   on `WHERE is_live`). While live it's one channel-info call/min/channel.
 - `reconcile` is the heavy job (list followers/subs/vips/mods per channel

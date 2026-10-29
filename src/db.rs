@@ -11,16 +11,25 @@ use crate::config::DbPoolConfig;
 /// blast radius of a leaked-but-still-pooled connection.
 const POOL_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
 
+/// Prepared statements each pooled connection keeps. When the cache is full
+/// sqlx closes the least recently used one, so a backend never holds more
+/// plans than this.
+///
+/// Never set it to 0. With the cache off, sqlx 0.8 still prepares every
+/// query as a new named statement (`sqlx_s_N`) and never closes it, so each
+/// backend keeps one plan per query it has run until `POOL_MAX_LIFETIME`
+/// recycles the connection. On 2026-10-29 that grew every backend to ~45 MB
+/// during the restart sweep, and the 256 MB DB container was OOM-killed
+/// mid-query. Disabling the cache never made pgBouncer transaction mode safe
+/// either: a named statement is still parsed in one sync and executed in the
+/// next. Behind pgBouncer, run 1.21+ with `max_prepared_statements` at least
+/// this high.
+const STATEMENT_CACHE_CAPACITY: usize = 100;
+
 pub async fn create_pool(database_url: &str, cfg: &DbPoolConfig) -> PgPool {
-    // Disable sqlx's prepared-statement cache. We deploy pgBouncer in
-    // transaction-pool mode in front of Postgres; under that mode the
-    // backend a connection is mapped to changes between transactions, which
-    // makes session-scoped prepared statements unsafe (the next backend
-    // wouldn't know about them and queries would fail with
-    // `prepared statement "sqlx_s_…" does not exist`).
     let connect_options = PgConnectOptions::from_str(database_url)
         .expect("invalid DATABASE_URL")
-        .statement_cache_capacity(0);
+        .statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
 
     PgPoolOptions::new()
         .max_connections(cfg.max_connections)
