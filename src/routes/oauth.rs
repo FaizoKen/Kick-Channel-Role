@@ -488,15 +488,21 @@ async fn viewer_callback_inner(
         .ok()
         .map(|(_, name)| name);
 
-    // Upsert by discord_id; ON CONFLICT (kick_user_id) is the real safety
-    // net for "same Kick account, two Discord IDs" — we reject that.
+    // Upsert by discord_id, unless this Kick account is already linked to a
+    // different Discord ID — we reject that. The NOT EXISTS turns the usual
+    // case into zero rows instead of a unique violation, which Postgres logs
+    // as an ERROR on every retry; the 23505 check below still catches two
+    // links racing for the same account.
     //
     // `discord_name` uses COALESCE so a NULL on this insert (cookie gone)
     // doesn't blank out a previously stored name on re-link.
     let result = sqlx::query(
         "INSERT INTO kick_users (\
              discord_id, kick_user_id, kick_username, kick_created_at, discord_name, linked_at, refreshed_at\
-         ) VALUES ($1,$2,$3,$4,$5, now(), now())\
+         ) SELECT $1,$2,$3,$4,$5, now(), now() \
+         WHERE NOT EXISTS (\
+             SELECT 1 FROM kick_users WHERE kick_user_id = $2 AND discord_id <> $1\
+         ) \
          ON CONFLICT (discord_id) DO UPDATE SET \
              kick_user_id = EXCLUDED.kick_user_id, \
              kick_username = EXCLUDED.kick_username, \
@@ -515,21 +521,28 @@ async fn viewer_callback_inner(
     .execute(&state.pool)
     .await;
 
-    if let Err(e) = result {
-        // Check for the unique violation on kick_user_id — means this Kick
-        // account is already linked to a different Discord ID.
-        if let sqlx::Error::Database(db_err) = &e {
-            if db_err.code().as_deref() == Some("23505")
-                && db_err.constraint() == Some("kick_users_kick_user_id_key")
-            {
-                return Err(AppError::Forbidden(format!(
-                    "Kick account {} is already linked to a different Discord account. \
-                     Unlink there first, then try again.",
-                    user.name
-                )));
+    let linked_elsewhere = || {
+        AppError::Forbidden(format!(
+            "Kick account {} is already linked to a different Discord account. \
+             Unlink there first, then try again.",
+            user.name
+        ))
+    };
+    match result {
+        Ok(done) if done.rows_affected() == 0 => return Err(linked_elsewhere()),
+        Ok(_) => {}
+        Err(e) => {
+            // The unique violation on kick_user_id — the race the NOT EXISTS
+            // can't see.
+            if let sqlx::Error::Database(db_err) = &e {
+                if db_err.code().as_deref() == Some("23505")
+                    && db_err.constraint() == Some("kick_users_kick_user_id_key")
+                {
+                    return Err(linked_elsewhere());
+                }
             }
+            return Err(AppError::from(e));
         }
-        return Err(AppError::from(e));
     }
 
     // Seed empty `channel_relations` rows now so the user is visible on the
