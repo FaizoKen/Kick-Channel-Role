@@ -73,9 +73,11 @@
     <h1>Kick channel connected</h1>
     <p>
       <span class="name">{{KICK_USERNAME}}</span>
-      is now linked to this server's Kick-Channel-Role config.
+      is now connected to this Discord server.
     </p>
-    <p>Return to the RoleLogic dashboard to pick this channel on any role link in <code>{{GUILD_ID}}</code>.</p>
+    <!-- No channel picker: a role's rule checks the most recently connected
+         channel, and its settings page picks this one up when you return. -->
+    <p>Go back to the role's settings in the RoleLogic dashboard — they show this channel now. Click <strong>Save</strong> there to start using it.</p>
     <button id="close-btn" class="primary">Close this tab</button>
     <p id="close-hint" class="small" style="display:none">
       Your browser blocked auto-close. You can close this tab manually.

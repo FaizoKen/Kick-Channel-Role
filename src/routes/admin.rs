@@ -672,8 +672,8 @@ pub async fn role_config_save(
         && !parsed.rule_tree.groups.is_empty()
     {
         return Err(AppError::BadRequest(
-            "Pick the Kick channel this rule checks against before saving — \
-             without a connected channel it would grant the role to nobody."
+            "Connect your Kick channel before saving — \
+             without one this rule would grant the role to nobody."
                 .into(),
         ));
     }
@@ -815,14 +815,22 @@ async fn preview_count_for(
 ) -> Result<Json<Value>, AppError> {
     // Mirror the sync engine's Convention-42 guard (services::sync): a rule
     // grants to nobody only when it is NOT channel-agnostic AND it has no
-    // channel bound or no groups. `grant_on_any_relation` is channel-agnostic,
+    // groups or no channel bound. `grant_on_any_relation` is channel-agnostic,
     // so the default "Anyone who linked their Kick" preset (which carries no
     // channel) must NOT short-circuit here — it matches every linked member.
-    let nobody = !tree.grant_on_any_relation && (channel_id.is_none() || tree.groups.is_empty());
-    if nobody {
+    if !tree.grant_on_any_relation && tree.groups.is_empty() {
         return Ok(Json(
             json!({ "matching": 0, "linked": 0, "available": true }),
         ));
+    }
+    // A follower / subscriber / … rule with no channel connected: there is
+    // nothing to count against yet. Say what to do rather than "0 of 0 linked
+    // member(s) match", which reads as if nobody had linked.
+    if !tree.grant_on_any_relation && channel_id.is_none() {
+        return Ok(Json(json!({
+            "available": false,
+            "reason": "Connect your Kick channel to count who matches this rule.",
+        })));
     }
 
     let member_ids = match auth_gateway::fetch_guild_member_ids(
@@ -864,8 +872,8 @@ async fn preview_count_for(
         })));
     }
 
-    // Channel-scoped rule. The `nobody` guard above guarantees a channel is
-    // bound and at least one group exists for this path.
+    // Channel-scoped rule. The guards above guarantee a channel is bound and
+    // at least one group exists for this path.
     let channel_id = channel_id.expect("channel bound for non-grant preview");
 
     let (rule_where, binds) = rule_sql::build_rule_where(tree, 2);
@@ -908,8 +916,18 @@ fn kind_str(k: TargetKind) -> &'static str {
     }
 }
 
+/// Targets the picker no longer offers for new conditions. Kick never tells
+/// us a member's country (nothing writes `kick_users.country_code`), so a
+/// condition on it can never match. It stays valid, and listed with
+/// `retired: true`, so a rule saved with it still loads as itself and saves
+/// again; the page only shows it on a row that already uses it.
+const RETIRED_TARGETS: &[ConditionTarget] = &[ConditionTarget::CountryCode];
+
 fn target_catalog() -> Vec<Value> {
     use ConditionTarget::*;
+    // `AccountAgeDays` keeps its key, but Kick's user object carries no
+    // creation date: `kick_created_at` is stamped when the member links (and
+    // again on a re-link), so the label says what is actually counted.
     let entries: &[(ConditionTarget, &str, &str)] = &[
         (IsFollower, "Is a follower", "viewer"),
         (FollowAgeDays, "Days since first followed", "viewer"),
@@ -923,8 +941,12 @@ fn target_catalog() -> Vec<Value> {
         (KicksDonatedToChannel, "KICKs donated to channel", "viewer"),
         (ChatMessages30d, "Chat messages (last 30d)", "viewer"),
         (IsOg, "Has this channel's OG badge", "viewer"),
-        (AccountAgeDays, "Kick account age (days)", "viewer"),
-        (CountryCode, "Country code", "viewer"),
+        (AccountAgeDays, "Days since they linked Kick", "viewer"),
+        (
+            CountryCode,
+            "Country code (Kick doesn't share it)",
+            "viewer",
+        ),
         (Username, "Kick username", "viewer"),
     ];
     entries
@@ -935,6 +957,7 @@ fn target_catalog() -> Vec<Value> {
                 "label": label,
                 "kind": kind_str(t.kind()),
                 "group": group,
+                "retired": RETIRED_TARGETS.contains(t),
             })
         })
         .collect()

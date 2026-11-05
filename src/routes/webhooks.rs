@@ -389,6 +389,19 @@ async fn apply_event(
             .bind(uid)
             .execute(pool)
             .await?;
+            // …and today's bucket, which is what keeps that counter a real
+            // 30-day window: the reconcile worker recomputes it from the last
+            // 30 days of buckets (migration 014, tasks::reconcile).
+            sqlx::query(
+                "INSERT INTO chat_activity_days (kick_channel_id, kick_user_id, day, messages) \
+                 VALUES ($1, $2, (now() AT TIME ZONE 'UTC')::date, 1) \
+                 ON CONFLICT (kick_channel_id, kick_user_id, day) \
+                 DO UPDATE SET messages = chat_activity_days.messages + 1",
+            )
+            .bind(cid)
+            .bind(uid)
+            .execute(pool)
+            .await?;
 
             let mut changed = false;
 

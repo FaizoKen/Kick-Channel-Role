@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect};
@@ -406,6 +407,7 @@ pub async fn verify_kick(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<Value>, AppError> {
     csrf::verify_origin(&headers, &state.allowed_origins)?;
     let (discord_id, _) = read_session(&jar, &state.config.session_secret)?;
@@ -413,6 +415,15 @@ pub async fn verify_kick(
     let client_id = state.config.kick.client_id.as_deref().ok_or_else(|| {
         AppError::Internal("KICK_CLIENT_ID is not configured on this server.".into())
     })?;
+
+    // The server the member opened the page for (`?guild=`), if any. Kept on
+    // the OAuth state so the callback can send them back to that same page —
+    // with an explanation if they cancel — instead of a context-free one.
+    // Optional and best-effort: an older page posts no body at all.
+    let guild = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| v.get("guild").and_then(Value::as_str).map(str::to_owned))
+        .filter(|g| (5..=25).contains(&g.len()) && g.bytes().all(|b| b.is_ascii_digit()));
 
     let state_token = Uuid::new_v4().to_string();
     let code_verifier = kick::new_code_verifier();
@@ -422,7 +433,7 @@ pub async fn verify_kick(
         &code_verifier,
         "viewer",
         &discord_id,
-        None,
+        guild.as_deref(),
         None,
     )
     .await?;

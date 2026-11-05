@@ -49,6 +49,10 @@ pub async fn run(state: Arc<AppState>, mut shutdown: ShutdownGuard) {
     loop {
         gc(&state).await;
 
+        // Age the chat counters before the per-channel syncs below re-evaluate
+        // rules, so "Chat messages (last 30d)" is the last 30 days when they do.
+        age_chat_activity(&state).await;
+
         // Recover viewers whose relationship has never been read successfully
         // — everyone who linked before the probe existed, plus anyone whose
         // probe failed at link time. This is what stops a member who followed
@@ -114,6 +118,37 @@ async fn gc(state: &Arc<AppState>) {
     )
     .execute(&state.pool)
     .await;
+}
+
+/// Recompute `chat_messages_30d` from the per-day buckets (migration 014) and
+/// drop buckets older than the window. Only rows that have a count can go
+/// down, so only those are touched. Best-effort like `gc`: a failure leaves
+/// the counters as they were until the next cycle.
+async fn age_chat_activity(state: &Arc<AppState>) {
+    let recount = sqlx::query(
+        "UPDATE channel_relations cr \
+         SET chat_messages_30d = COALESCE(( \
+               SELECT sum(d.messages) FROM chat_activity_days d \
+                WHERE d.kick_channel_id = cr.kick_channel_id \
+                  AND d.kick_user_id = cr.kick_user_id \
+                  AND d.day > (now() AT TIME ZONE 'UTC')::date - 30 \
+             ), 0)::int \
+         WHERE cr.chat_messages_30d > 0",
+    )
+    .execute(&state.pool)
+    .await;
+    if let Err(e) = recount {
+        tracing::warn!("chat activity recount failed: {e}");
+        return;
+    }
+    if let Err(e) = sqlx::query(
+        "DELETE FROM chat_activity_days WHERE day <= (now() AT TIME ZONE 'UTC')::date - 30",
+    )
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!("chat activity cleanup failed: {e}");
+    }
 }
 
 /// Refresh one channel's live state, expire lapsed subscriptions, and fan

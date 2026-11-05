@@ -82,6 +82,11 @@
       padding: 9px 13px; border-radius: 9px; margin: 0 0 18px;
       font-size: 13px; line-height: 1.5; }
     .guild-ctx.show { display: flex; }
+    /* Why the last Kick sign-in didn't link (?link= from the callback). */
+    .link-msg { display: none; background: #2a1c08; border: 1px solid #5a3a0e;
+      color: #fbbf24; padding: 10px 13px; border-radius: 9px; margin: 0 0 18px;
+      font-size: 13px; line-height: 1.5; }
+    .link-msg.show { display: block; }
     .guild-ctx.warn { background: #2a1c08; border-color: #5a3a0e; color: #fbbf24; }
     .guild-ctx .gctx-icon { flex-shrink: 0; }
     .guild-ctx .gctx-name { color: #fff; font-weight: 600; }
@@ -143,6 +148,10 @@
     <svg class="gctx-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
     <span id="guild-ctx-text"></span>
   </div>
+
+  <!-- Set when the Kick sign-in came back without a link: cancelled, expired,
+       or that Kick account already belongs to another Discord account. -->
+  <div id="link-msg" class="link-msg" role="alert"></div>
 
   <!-- Step 1: follow / subscribe. Instructional and unauthenticated, so it has
        no done/active state — the confirmed answer lands in step 4 once the
@@ -573,8 +582,10 @@ function renderChannels(channels) {
   if (!channels.length) {
     // Either no ?guild context, or the admin hasn't connected a channel yet.
     // Both are non-fatal — linking still works; tailor the wording.
+    // A server may not use a channel at all ("Anyone who linked their Kick"
+    // needs none), so don't promise one is coming.
     list.innerHTML = '<div class="status-line">' + (guildId
-      ? "This server hasn't connected its Kick channel yet. You can still sign in and link below — your role applies once the admin connects one."
+      ? "This server hasn't connected a Kick channel to follow. Sign in and link below — your roles apply as soon as you qualify."
       : "Open the Kick channel your server uses and follow (or subscribe to) it, then continue below.")
       + '</div>';
     return;
@@ -597,9 +608,12 @@ function renderChannels(channels) {
 $('kick-btn').addEventListener('click', async () => {
   $('kick-btn').disabled = true;
   try {
+    // The server this page is for rides along, so the callback brings the
+    // member back here (with ?guild=) whatever happens on Kick.
     const r = await fetch(BASE_URL + '/verify/kick', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(guildId ? { guild: guildId } : {}),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -642,6 +656,28 @@ $('unlink-btn').addEventListener('click', async () => {
   const action = u.origin + '/auth/logout?return_to=' +
     encodeURIComponent(path + '/verify');
   document.querySelectorAll('form.logout-form').forEach(f => { f.action = action; });
+})();
+
+// The Kick callback sends members back here with ?link=<outcome> when linking
+// didn't happen, instead of leaving them on a bare error.
+(function showLinkOutcome() {
+  const messages = {
+    cancelled: "Kick linking was cancelled, so nothing changed. Click Link Kick account to try again.",
+    taken: "That Kick account is already linked to a different Discord account. Unlink it there first, or sign in to Kick with another account.",
+    expired: "That Kick sign-in expired or was already used. Click Link Kick account to try again.",
+  };
+  let outcome = '';
+  try { outcome = new URLSearchParams(window.location.search).get('link') || ''; } catch (e) {}
+  if (!Object.prototype.hasOwnProperty.call(messages, outcome)) return;
+  const el = $('link-msg');
+  el.textContent = messages[outcome];
+  el.classList.add('show');
+  // Drop it from the address bar so a reload doesn't repeat it.
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('link');
+    history.replaceState(null, '', u.pathname + u.search);
+  } catch (e) {}
 })();
 
 loadChannels();

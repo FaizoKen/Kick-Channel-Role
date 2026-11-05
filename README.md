@@ -2,8 +2,10 @@
 
 A RoleLogic plugin that grants Discord roles based on a member's relationship
 to a Kick.com channel — follower / subscriber / VIP / mod / OG, with cumulative
-sub-months, gift counts, account-age, regex matches, plus per-channel ephemeral
-targets (live status, current category) for "Live Now"-style roles.
+sub-months, sub streaks, gift counts, KICKs donated, 30-day chat activity, follow
+age and username matches. A rule checks one channel: the one most recently
+connected to the server. Live status and stream category are shown to admins
+and members but are not conditions — no rule adds or removes a role on go-live.
 
 Conditions compose as a **DNF rule tree** (OR of AND-groups), so admins can
 express rules like *"(subscriber AND ≥3 months) OR VIP OR (follower AND
@@ -16,7 +18,7 @@ deploy, modeled directly on [Form-Respondent-Role](../Form-Respondent-Role/).
 > **Status: feature-complete (phases 1–11).** Implemented end to end:
 > RoleLogic contract (iframe UI mode); Kick OAuth 2.1 + PKCE for broadcaster
 > connect and viewer verification; AES-256-GCM at-rest encryption of Kick
-> tokens; the DNF rule engine (18 condition targets, 11 operators, OR-of-AND
+> tokens; the DNF rule engine (15 condition targets, 11 operators, OR-of-AND
 > groups) with both a Rust evaluator and a pushdown SQL builder; durable job
 > queue + per-player / per-role-link / per-channel sync workers; Kick webhook
 > ingestor (HMAC-verified, idempotent) with auto-subscribe on connect;

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Redirect};
 use axum_extra::extract::cookie::CookieJar;
 use bytes::Bytes;
 use serde::Deserialize;
@@ -21,6 +21,9 @@ use crate::services::kick::KickClient;
 use crate::AppState;
 
 const SUCCESS_PAGE: &str = include_str!("../../templates/oauth_done.html");
+/// The broadcaster flow's page for a connect that didn't happen (cancelled on
+/// Kick, an expired sign-in, permissions unticked). `{{MESSAGE}}` says which.
+const NOT_CONNECTED_PAGE: &str = include_str!("../../templates/oauth_not_connected.html");
 /// Viewer post-link success page. The broadcaster connect flow uses
 /// `SUCCESS_PAGE` (an admin popup that auto-closes); the viewer link flow
 /// is a normal top-level navigation, so it gets its own "You're linked!"
@@ -64,22 +67,62 @@ pub async fn broadcaster_callback(
     }
 }
 
+/// The page a broadcaster lands on when connecting didn't happen. This tab was
+/// opened from the role's settings, so it explains what to do there instead
+/// of showing a bare JSON error.
+fn not_connected_page(state: &AppState, message: &str) -> Bytes {
+    let message = message
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    Bytes::from(
+        NOT_CONNECTED_PAGE
+            .replace("{{BASE_URL}}", &state.config.base_url)
+            .replace("{{MESSAGE}}", &message),
+    )
+}
+
+const CONNECT_CANCELLED: &str = "Connecting was cancelled on Kick, so nothing changed. \
+     Close this tab and click Connect Kick channel in the role's settings when you're ready.";
+const CONNECT_EXPIRED: &str = "That Kick sign-in expired or was already used. \
+     Close this tab and click Connect Kick channel in the role's settings again.";
+
+/// Kick's consent screen lets the broadcaster untick everything but "Read
+/// user information". Without `events:subscribe` Kick sends no follows, subs
+/// or chat, and without `channel:read` there is no live state or channel
+/// slug, so a channel connected that way would look fine and never update.
+/// Returns the scopes we need that the token lacks. No scope string (Kick
+/// didn't echo one, or sent it empty) is taken as everything granted, as
+/// before, and a scope counts as present wherever it appears in the string,
+/// so a delimiter Kick might change can never refuse a good connect.
+fn missing_broadcaster_scopes(granted: Option<&str>) -> Vec<&'static str> {
+    let granted = granted.unwrap_or("").trim();
+    if granted.is_empty() {
+        return Vec::new();
+    }
+    ["channel:read", "events:subscribe"]
+        .into_iter()
+        .filter(|s| !granted.contains(s))
+        .collect()
+}
+
 async fn broadcaster_callback_inner(
     state: Arc<AppState>,
     q: CallbackQuery,
 ) -> Result<Bytes, AppError> {
-    if let Some(err) = q.error {
-        let desc = q.error_description.unwrap_or_default();
-        return Err(AppError::BadRequest(format!(
-            "Kick returned an error during authorization: {err} ({desc})"
-        )));
+    // Cancel on Kick's consent screen (error=access_denied), or any other
+    // refusal: nothing to connect.
+    if let Some(err) = q.error.as_deref() {
+        tracing::info!(
+            err,
+            desc = q.error_description.as_deref().unwrap_or(""),
+            "Broadcaster connect cancelled on Kick"
+        );
+        return Ok(not_connected_page(&state, CONNECT_CANCELLED));
     }
-    let code = q
-        .code
-        .ok_or_else(|| AppError::BadRequest("Missing `code` from Kick callback.".into()))?;
-    let st = q
-        .state
-        .ok_or_else(|| AppError::BadRequest("Missing `state` from Kick callback.".into()))?;
+    let (Some(code), Some(st)) = (q.code, q.state) else {
+        return Ok(not_connected_page(&state, CONNECT_EXPIRED));
+    };
 
     // Consume the state row in a single DELETE … RETURNING so it can't be
     // replayed even on race.
@@ -91,11 +134,10 @@ async fn broadcaster_callback_inner(
     .bind(&st)
     .fetch_optional(&state.pool)
     .await?;
-    let row = row.ok_or_else(|| {
-        AppError::BadRequest(
-            "OAuth state expired or unknown — start the connect flow again.".into(),
-        )
-    })?;
+    // Expired (10 minutes), already used, or never ours: start over.
+    let Some(row) = row else {
+        return Ok(not_connected_page(&state, CONNECT_EXPIRED));
+    };
     if row.flow != "broadcaster" {
         return Err(AppError::BadRequest(
             "OAuth state was issued for a different flow.".into(),
@@ -118,6 +160,24 @@ async fn broadcaster_callback_inner(
     let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
         AppError::KickApi("Kick did not return a refresh_token — connect cannot persist.".into())
     })?;
+
+    // Refuse a connection that could never update rather than store one that
+    // silently doesn't (see `missing_broadcaster_scopes`).
+    let missing = missing_broadcaster_scopes(tokens.scope.as_deref());
+    if !missing.is_empty() {
+        tracing::info!(
+            guild_id = %guild_id,
+            missing = ?missing,
+            "Broadcaster connect refused: permissions unticked on Kick"
+        );
+        return Ok(not_connected_page(
+            &state,
+            "Kick didn't give RoleLogic everything it needs. \"Read channel information\" \
+             and \"Subscribe to events\" let it see your live status, follows, \
+             subscriptions and chat badges, so nothing would update without them. \
+             Close this tab and click Connect Kick channel again, leaving every box ticked.",
+        ));
+    }
 
     let user = client.get_authenticated_user(&tokens.access_token).await?;
     let channel = client
@@ -191,10 +251,16 @@ async fn broadcaster_callback_inner(
     .execute(&mut *tx)
     .await?;
 
+    // A reconnect moves the channel to the front: the role settings bind a
+    // rule to the most recently connected channel, so connecting a channel
+    // this server already had is how an admin switches back to it. (With DO
+    // NOTHING it kept its old `connected_at` and could never be picked again.)
     sqlx::query(
         "INSERT INTO guild_broadcasters (guild_id, kick_channel_id, connected_by_discord_id) \
          VALUES ($1,$2,$3) \
-         ON CONFLICT (guild_id, kick_channel_id) DO NOTHING",
+         ON CONFLICT (guild_id, kick_channel_id) DO UPDATE SET \
+             connected_at = now(), \
+             connected_by_discord_id = EXCLUDED.connected_by_discord_id",
     )
     .bind(&guild_id)
     .bind(user.user_id)
@@ -220,8 +286,7 @@ async fn broadcaster_callback_inner(
     // Render the success page with a small bit of substitution.
     let html = SUCCESS_PAGE
         .replace("{{BASE_URL}}", &state.config.base_url)
-        .replace("{{KICK_USERNAME}}", &user.name)
-        .replace("{{GUILD_ID}}", &guild_id);
+        .replace("{{KICK_USERNAME}}", &user.name);
     Ok(Bytes::from(html))
 }
 
@@ -407,50 +472,74 @@ pub async fn viewer_callback(
     Query(q): Query<CallbackQuery>,
 ) -> impl IntoResponse {
     match viewer_callback_inner(state, jar, q).await {
-        Ok(html) => (
+        Ok(ViewerOutcome::Linked(html)) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
             html,
         )
             .into_response(),
+        Ok(ViewerOutcome::Back(to)) => Redirect::to(&to).into_response(),
         Err(e) => e.into_response(),
     }
+}
+
+/// Where a member's Kick sign-in ends: the "You're linked!" page, or back on
+/// the verify page with `?link=<outcome>`, which it explains — instead of a
+/// bare JSON error on a page they navigated to themselves.
+enum ViewerOutcome {
+    Linked(Bytes),
+    Back(String),
+}
+
+/// The verify page with an outcome it explains (`cancelled`, `expired`,
+/// `taken`), keeping the server context the member started from.
+fn verify_back(base_url: &str, guild_id: Option<&str>, outcome: &str) -> ViewerOutcome {
+    ViewerOutcome::Back(match guild_id {
+        Some(g) => format!("{base_url}/verify?guild={g}&link={outcome}"),
+        None => format!("{base_url}/verify?link={outcome}"),
+    })
 }
 
 async fn viewer_callback_inner(
     state: Arc<AppState>,
     jar: CookieJar,
     q: CallbackQuery,
-) -> Result<Bytes, AppError> {
-    if let Some(err) = q.error {
-        let desc = q.error_description.unwrap_or_default();
-        return Err(AppError::BadRequest(format!(
-            "Kick returned an error: {err} ({desc})"
-        )));
-    }
-    let code = q
-        .code
-        .ok_or_else(|| AppError::BadRequest("Missing `code` from Kick callback.".into()))?;
-    let st = q
-        .state
-        .ok_or_else(|| AppError::BadRequest("Missing `state` from Kick callback.".into()))?;
+) -> Result<ViewerOutcome, AppError> {
+    let base = state.config.base_url.as_str();
+    // The state is consumed even on a cancel, so the page we send the member
+    // back to keeps its ?guild=.
+    let row: Option<OauthState> = match q.state.as_deref() {
+        Some(st) => {
+            sqlx::query_as(
+                "DELETE FROM kick_oauth_states \
+                 WHERE state = $1 AND expires_at > now() \
+                 RETURNING code_verifier, flow, discord_id, guild_id",
+            )
+            .bind(st)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        None => None,
+    };
+    // Expired (10 minutes), already used, or never ours: start over.
+    let Some(row) = row.filter(|r| r.flow == "viewer") else {
+        return Ok(verify_back(base, None, "expired"));
+    };
+    let guild = row.guild_id.clone();
 
-    let row: Option<OauthState> = sqlx::query_as(
-        "DELETE FROM kick_oauth_states \
-         WHERE state = $1 AND expires_at > now() \
-         RETURNING code_verifier, flow, discord_id, guild_id",
-    )
-    .bind(&st)
-    .fetch_optional(&state.pool)
-    .await?;
-    let row = row.ok_or_else(|| {
-        AppError::BadRequest("OAuth state expired or unknown — start the link flow again.".into())
-    })?;
-    if row.flow != "viewer" {
-        return Err(AppError::BadRequest(
-            "OAuth state was issued for a different flow.".into(),
-        ));
+    // Cancel on Kick's consent screen (error=access_denied), or any other
+    // refusal.
+    if let Some(err) = q.error.as_deref() {
+        tracing::info!(
+            err,
+            desc = q.error_description.as_deref().unwrap_or(""),
+            "Viewer link cancelled on Kick"
+        );
+        return Ok(verify_back(base, guild.as_deref(), "cancelled"));
     }
+    let Some(code) = q.code else {
+        return Ok(verify_back(base, guild.as_deref(), "cancelled"));
+    };
 
     let client = build_kick_client(&state)?;
     let redirect_uri = viewer_redirect_uri(&state.config.base_url);
@@ -513,23 +602,26 @@ async fn viewer_callback_inner(
     .bind(&row.discord_id)
     .bind(user.user_id)
     .bind(&user.name)
-    // kick_created_at: Kick's user object may not expose this on the public
-    // /users endpoint. If it does, parse it; otherwise default to "now" so
-    // account_age_days = 0 until the reconcile worker (Phase 9) backfills.
+    // kick_created_at: Kick's user object carries no creation date, so this
+    // is the link time (re-stamped on a re-link). The `account_age_days`
+    // condition therefore counts days since linking, and the role settings
+    // label it that way ("Days since they linked Kick").
     .bind(chrono::Utc::now())
     .bind(&discord_name)
     .execute(&state.pool)
     .await;
 
+    // Shown on the verify page (`?link=taken`), not as a bare JSON error.
     let linked_elsewhere = || {
-        AppError::Forbidden(format!(
-            "Kick account {} is already linked to a different Discord account. \
-             Unlink there first, then try again.",
-            user.name
-        ))
+        tracing::info!(
+            discord_id = %row.discord_id,
+            kick_user_id = user.user_id,
+            "Viewer link refused: Kick account already linked to another Discord account"
+        );
+        verify_back(base, guild.as_deref(), "taken")
     };
     match result {
-        Ok(done) if done.rows_affected() == 0 => return Err(linked_elsewhere()),
+        Ok(done) if done.rows_affected() == 0 => return Ok(linked_elsewhere()),
         Ok(_) => {}
         Err(e) => {
             // The unique violation on kick_user_id — the race the NOT EXISTS
@@ -538,7 +630,7 @@ async fn viewer_callback_inner(
                 if db_err.code().as_deref() == Some("23505")
                     && db_err.constraint() == Some("kick_users_kick_user_id_key")
                 {
-                    return Err(linked_elsewhere());
+                    return Ok(linked_elsewhere());
                 }
             }
             return Err(AppError::from(e));
@@ -654,10 +746,54 @@ async fn viewer_callback_inner(
     // Render the viewer "You're linked!" success page. It has a button back
     // to /verify, which reads /verify/status and shows the linked state if
     // the user returns there.
+    // The way back keeps the server the member came from (`?guild=`), so the
+    // verify page still names it and scopes "What we can see" to it.
+    let verify_qs = guild
+        .as_deref()
+        .map(|g| format!("?guild={g}"))
+        .unwrap_or_default();
     let html = VIEWER_DONE_PAGE
         .replace("{{BASE_URL}}", &state.config.base_url)
+        .replace("{{VERIFY_QS}}", &verify_qs)
         .replace("{{KICK_USERNAME}}", &user.name)
         .replace("{{KICK_SLUG}}", &kick_slug)
         .replace("{{KICK_USER_ID}}", &user.user_id.to_string());
-    Ok(Bytes::from(html))
+    Ok(ViewerOutcome::Linked(Bytes::from(html)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_broadcaster_scopes;
+
+    #[test]
+    fn every_box_ticked_connects() {
+        assert!(
+            missing_broadcaster_scopes(Some("user:read channel:read events:subscribe")).is_empty()
+        );
+    }
+
+    #[test]
+    fn unticked_events_is_refused() {
+        assert_eq!(
+            missing_broadcaster_scopes(Some("user:read channel:read")),
+            vec!["events:subscribe"]
+        );
+        assert_eq!(
+            missing_broadcaster_scopes(Some("user:read")),
+            vec!["channel:read", "events:subscribe"]
+        );
+    }
+
+    #[test]
+    fn no_scope_echo_is_taken_as_granted() {
+        assert!(missing_broadcaster_scopes(None).is_empty());
+        assert!(missing_broadcaster_scopes(Some("  ")).is_empty());
+    }
+
+    #[test]
+    fn any_delimiter_is_accepted() {
+        assert!(
+            missing_broadcaster_scopes(Some("user:read,channel:read,events:subscribe")).is_empty()
+        );
+    }
 }

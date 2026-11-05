@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Not connected — Kick Channel Role</title>
+  <link rel="icon" href="{{BASE_URL}}/favicon.ico">
+  <!-- The broadcaster connect flow's page for a connect that didn't happen:
+       cancelled on Kick, an expired sign-in, or permissions unticked on
+       Kick's consent screen. oauth_done.html's card, in amber. -->
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #161a23;
+      --border: #2a2f3a;
+      --text: #e8eaed;
+      --muted: #9aa3b2;
+      --accent: #53d49a; /* Kick green */
+      --accent-hover: #6fe0ae;
+      --warn: #f0b866;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      margin: 0; padding: 48px 24px; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 14px; padding: 32px 28px; max-width: 460px; width: 100%;
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 56px; height: 56px; border-radius: 14px;
+      background: rgba(240, 184, 102, .15); color: var(--warn);
+      font-size: 30px; font-weight: 700; margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; }
+    p { margin: 8px 0; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
+    button { font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+    button.primary {
+      display: inline-block; margin-top: 20px;
+      background: var(--accent); color: #08110b; border: 0;
+      padding: 11px 22px; border-radius: 8px;
+      transition: background 0.15s;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    .small { margin-top: 16px; color: #6a7385; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">!</div>
+    <h1>Kick channel not connected</h1>
+    <p>{{MESSAGE}}</p>
+    <button id="close-btn" class="primary">Close this tab</button>
+    <p id="close-hint" class="small" style="display:none">
+      Your browser blocked auto-close. You can close this tab manually.
+    </p>
+  </div>
+<script>
+// Opened with `noopener` from the admin iframe, so most browsers refuse a
+// programmatic close; on failure the button turns into a hint.
+(function wireClose(){
+  const btn = document.getElementById('close-btn');
+  const hint = document.getElementById('close-hint');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    window.close();
+    setTimeout(() => {
+      if (!window.closed) {
+        btn.style.display = 'none';
+        if (hint) hint.style.display = 'block';
+      }
+    }, 150);
+  });
+})();
+</script>
+</body>
+</html>

@@ -258,6 +258,8 @@ function wireCopy(btnId,text){ const b=document.getElementById(btnId); if(!b) re
     setTimeout(()=>b.textContent='Copy link',1500); }); }); }
 
 let state=null, dirty=false, refreshInFlight=false, supPending=false;
+// The footer count, kept across re-renders so it doesn't blank on each click.
+let lastCount='', previewSeq=0, previewTimer=null;
 // The just-minted token, held only until this page is left or the key is
 // revoked. Never persisted anywhere — the server keeps a hash.
 let newKey=null;
@@ -284,6 +286,7 @@ function ruleKey(c){ return JSON.stringify({
 function recomputeDirty(){
   if(!state||!state._edit||!state.config) return;
   setDirty(ruleKey(state._edit)!==ruleKey(state.config));
+  autoPreview(400); // debounced: typing a month count fires this per keystroke
 }
 
 const HELP={ is_follower:"Currently follows the channel.",
@@ -298,8 +301,11 @@ const HELP={ is_follower:"Currently follows the channel.",
   kicks_donated_to_channel:"Total KICKs donated to the channel.",
   chat_messages_30d:"Chat messages in the last 30 days.",
   is_og:"Holds this channel's OG badge (granted by you, like VIP).",
-  account_age_days:"Age of their Kick account, in days.",
-  country_code:"Public country code, e.g. US.",
+  // Kick shares neither a member's account age nor their country. The first
+  // counts from when they linked here instead (and restarts if they re-link);
+  // the second is kept only so an old rule that uses it still shows up.
+  account_age_days:"Kick doesn't share account ages, so this counts days since they linked their Kick here.",
+  country_code:"Kick doesn't share a member's country, so this never matches. Pick another condition.",
   username:"Their Kick username." };
 
 /* preset id -> friendly copy + rule shape */
@@ -539,7 +545,7 @@ function render(){
     ${usersBlk}
     ${apiBlk}
     <div class="foot">
-      <span class="count" id="count"></span>
+      <span class="count" id="count">${lastCount}</span>
       <div class="foot-btns">
         <button id="preview">Preview</button>
         <button id="save" class="primary" ${dirty?'':'disabled'}>Save</button>
@@ -569,7 +575,7 @@ function render(){
   postHeight();
 }
 
-function choose(id){ state._preset=id; applyPreset(id); render(); }
+function choose(id){ state._preset=id; applyPreset(id); render(); autoPreview(); }
 function applyPreset(id,keepRender){
   const p=presets().find(x=>x.id===id);
   if(id==='custom'){
@@ -610,8 +616,12 @@ function renderRule(){
 function condRow(cc,gi,ci){
   const tgt=targetByKey(cc.target)||state.targets[0];
   const grps=[...new Set(state.targets.map(t=>t.group))];
+  // A retired target (one Kick never fills in) is offered only on a row that
+  // already uses it, so an old rule still reads true instead of silently
+  // turning into the first condition in the list.
+  const offered=t=>!t.retired||t.key===cc.target;
   const tsel=grps.map(g=>`<optgroup label="${g==='viewer'?'About the viewer':'About the channel'}">`+
-    state.targets.filter(t=>t.group===g).map(t=>`<option value="${t.key}" ${t.key===cc.target?'selected':''}>${esc(t.label)}</option>`).join('')+`</optgroup>`).join('');
+    state.targets.filter(t=>t.group===g&&offered(t)).map(t=>`<option value="${t.key}" ${t.key===cc.target?'selected':''}>${esc(t.label)}</option>`).join('')+`</optgroup>`).join('');
   let mid;
   if(tgt.kind==='bool'){ const m=cc.value===true||cc.value==='true';
     mid=`<select class="bv"><option value="1" ${m?'selected':''}>must be true</option><option value="0" ${!m?'selected':''}>must be false</option></select>`;
@@ -747,37 +757,57 @@ async function connectChannel(){
     postToast('Kick opened in a new tab. Approve it, then return here — this page refreshes itself.','success');
   }catch(e){ postToast('Connect error: '+e); }
 }
-async function doPreview(){
-  const el=document.getElementById('count'); if(!el) return;
-  try{
-    const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/role/${ROLE_ID}/preview`,
-      {headers:apiHeaders(),credentials:apiCreds(),cache:'no-store'});
-    const d=await r.json();
-    if(!r.ok||d.available===false){ el.textContent=''; return; }
-    el.innerHTML=`<span class="ok">${d.matching}</span> of ${d.linked} linked member(s) match`
-      +(dirty?` · <span style="color:#fbbf24">Save to apply</span>`:``);
-  }catch(_){ el.textContent=''; }
-  postHeight();
+function setCount(html){ lastCount=html; const el=document.getElementById('count');
+  if(el) el.innerHTML=html; postHeight(); }
+function countHtml(d,unsaved){
+  return `<span class="ok">${d.matching}</span> of ${d.linked} linked member(s) match`
+    +(unsaved?` · <span style="color:#fbbf24">Preview of unsaved rule</span>`:``);
 }
-function autoPreview(){ doPreview(); }
+function editPayload(){ const cfg=state._edit;
+  return { kick_channel_id:cfg.kick_channel_id,
+    grant_on_any_relation:cfg.grant_on_any_relation,
+    groups: cfg.grant_on_any_relation?[]:(cfg.groups||[]) }; }
+// The count always describes the rule on screen: the saved rule's when
+// nothing is unsaved, the edit's (labelled) when something is. It used to
+// show the saved rule's count beside an unsaved choice, so every new link
+// opened on "0 of 0 linked member(s) match · Save to apply" — its saved rule
+// grants nobody — right under "Anyone who linked their Kick".
+function autoPreview(delay){ clearTimeout(previewTimer);
+  previewTimer=setTimeout(runAutoPreview, delay||0); }
+async function runAutoPreview(){
+  if(!state) return;
+  const seq=++previewSeq, unsaved=dirty;
+  const url=`${BASE_URL}/admin/${GUILD_ID}/role/${ROLE_ID}/preview`;
+  try{
+    const r=unsaved
+      ? await fetch(url,{method:'POST',headers:apiHeaders(),credentials:apiCreds(),body:JSON.stringify(editPayload())})
+      : await fetch(url,{headers:apiHeaders(),credentials:apiCreds(),cache:'no-store'});
+    const d=await r.json().catch(()=>({}));
+    if(seq!==previewSeq) return; // a newer edit already asked
+    if(r.ok&&d.available!==false){ setCount(countHtml(d,unsaved)); return; }
+    // An unfinished rule: say what's missing (the save-time validator's own
+    // words) instead of a count. A rule that needs a channel before it can
+    // count anyone says so. Anything else: no count.
+    if(r.status===400&&d.error) setCount(`<span style="color:#fbbf24">${esc(d.error)}</span>`);
+    else setCount(r.ok&&d.reason?esc(d.reason):'');
+  }catch(_){ if(seq===previewSeq) setCount(''); }
+}
 // Previews the *current* (possibly unsaved) edit. POSTs the proposed tree to
 // the same /preview endpoint — backend dispatches by HTTP method.
 async function doPreviewEdit(){
-  const el=document.getElementById('count'); const btn=document.getElementById('preview');
+  const btn=document.getElementById('preview');
   if(!btn) return;
-  const cfg=state._edit;
-  const payload={ kick_channel_id:cfg.kick_channel_id,
-    grant_on_any_relation:cfg.grant_on_any_relation,
-    groups: cfg.grant_on_any_relation?[]:(cfg.groups||[]) };
+  const payload=editPayload();
   btn.disabled=true; const orig=btn.textContent; btn.textContent='Previewing…';
+  clearTimeout(previewTimer); const seq=++previewSeq; // supersedes any auto preview in flight
   try{
     const r=await fetch(`${BASE_URL}/admin/${GUILD_ID}/role/${ROLE_ID}/preview`,
       {method:'POST',headers:apiHeaders(),credentials:apiCreds(),body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
+    if(seq!==previewSeq) return;
     if(!r.ok){ postToast(d.error||('Preview failed (HTTP '+r.status+')')); return; }
-    if(d.available===false){ el.textContent=d.reason||'Preview unavailable.'; postHeight(); return; }
-    el.innerHTML=`<span class="ok">${d.matching}</span> of ${d.linked} linked member(s) match`
-      +(dirty?` · <span style="color:#fbbf24">Preview of unsaved rule</span>`:``);
+    if(d.available===false){ setCount(esc(d.reason||'Preview unavailable.')); return; }
+    setCount(countHtml(d,dirty));
   }catch(e){ postToast('Network error: '+e); }
   finally{ btn.disabled=false; btn.textContent=orig; postHeight(); }
 }
@@ -788,10 +818,11 @@ async function doSave(){
   // bound would silently grant the role to nobody (Convention 42 / the
   // preview "nobody" short-circuit). Reject before the round-trip and alert
   // the dashboard so the admin sees why "Save" did nothing. Same condition
-  // the backend enforces, so the two never disagree.
+  // the backend enforces, so the two never disagree. (There is no channel
+  // picker: the rule uses the channel connected below, so "connect", not "pick".)
   if(!cfg.grant_on_any_relation && (cfg.groups||[]).length>0 && !cfg.kick_channel_id){
-    postToast('Pick the Kick channel this rule checks against before saving — '
-      +'without a connected channel it grants the role to nobody.');
+    postToast('Connect your Kick channel before saving — '
+      +'without one this rule grants the role to nobody.');
     return;
   }
   const payload={ rule_tree_version:state.rule_tree_version,
