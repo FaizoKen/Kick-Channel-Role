@@ -170,6 +170,17 @@ fn normalize_value(
             ))),
         },
         (TargetKind::Int, _) => {
+            // An empty box is the normal state right after picking a number
+            // condition, and the role settings show this message under the
+            // rule while it lasts, so say what to do rather than `(got "")`.
+            let blank = match &raw {
+                Value::Null => true,
+                Value::String(s) => s.trim().is_empty(),
+                _ => false,
+            };
+            if blank {
+                return Err(AppError::BadRequest(format!("{where_}: enter a number.")));
+            }
             let n = match &raw {
                 Value::Number(num) => num.as_i64().or_else(|| num.as_f64().map(|f| f as i64)),
                 Value::String(s) => s.trim().parse::<i64>().ok(),
@@ -311,6 +322,16 @@ mod tests {
         let body = one_group(vec![input("sub_months_cumulative", "gte", json!("3"))]);
         let parsed = parse_rule_tree(body).unwrap();
         assert_eq!(parsed.rule_tree.groups[0].conditions[0].value, json!(3));
+    }
+
+    #[test]
+    fn empty_number_asks_for_one() {
+        let body = one_group(vec![input("sub_months_cumulative", "gte", json!(""))]);
+        let err = match parse_rule_tree(body) {
+            Err(AppError::BadRequest(m)) => m,
+            _ => panic!("expected a BadRequest"),
+        };
+        assert_eq!(err, "Group #1, condition #1: enter a number.");
     }
 
     #[test]
