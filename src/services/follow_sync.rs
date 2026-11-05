@@ -118,6 +118,9 @@ pub async fn probe_and_apply_for_player(
     .await?;
 
     let mut report = ProbeReport::default();
+    // A follow Kick has denied at least once but not yet enough times to
+    // remove: it needs another observation, spaced MISS_SPACING apart.
+    let mut awaiting_confirmation = false;
 
     for row in rows {
         report.attempted += 1;
@@ -164,6 +167,9 @@ pub async fn probe_and_apply_for_player(
         if decision.changed_facts {
             report.changed = true;
         }
+        if decision.is_follower && decision.misses > 0 {
+            awaiting_confirmation = true;
+        }
 
         apply(state, kick_user_id, &row, &facts, &decision).await?;
     }
@@ -178,6 +184,30 @@ pub async fn probe_and_apply_for_player(
             attempted = report.attempted,
             "follow probe returned no usable answer for any channel"
         );
+    }
+
+    // Book the next observation now. Left to the staleness sweep, it would
+    // come RECHECK_AFTER_SECS (3 days) later, so the confirmations an unfollow
+    // needs took the best part of a week instead of the ~12 hours MISS_SPACING
+    // intends. One queued probe per member is enough; it re-checks every
+    // channel, and a positive answer clears the misses.
+    if awaiting_confirmation {
+        let queued: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM jobs \
+                 WHERE kind = 'follow_probe' AND status = 'pending' \
+                   AND payload->>'discord_id' = $1 \
+             )",
+        )
+        .bind(discord_id)
+        .fetch_one(&state.pool)
+        .await?;
+        if !queued {
+            // A few minutes past the spacing, so the miss is sure to count.
+            let delay = MISS_SPACING.num_seconds().unsigned_abs() + 300;
+            crate::services::jobs::enqueue_follow_probe_after(&state.pool, discord_id, delay)
+                .await?;
+        }
     }
 
     if report.changed {
