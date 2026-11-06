@@ -57,6 +57,16 @@ pub async fn run(state: Arc<AppState>, mut shutdown: ShutdownGuard) {
         // rules, so "Chat messages (last 30d)" is the last 30 days when they do.
         age_chat_activity(&state).await;
 
+        // Members Kick linked with a blank username can't be probed below
+        // (the probe is keyed by username); fill those in first.
+        if let Some(client) = build_client(&state) {
+            if let Err(e) =
+                crate::services::follow_sync::repair_blank_usernames(&state, &client, 200).await
+            {
+                tracing::warn!("blank-username repair failed: {e}");
+            }
+        }
+
         // Recover viewers whose relationship has never been read successfully
         // — everyone who linked before the probe existed, plus anyone whose
         // probe failed at link time. This is what stops a member who followed

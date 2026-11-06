@@ -42,6 +42,9 @@ pub const API_BASE: &str = "https://api.kick.com/public/v1";
 pub struct KickUser {
     /// Numeric Kick user ID. Stable forever for a given account.
     pub user_id: i64,
+    /// The username. Kick sometimes sends it blank (about 1 link in 25 by
+    /// 11-2026); `follow_sync::repair_usernames` fills those in.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub email: Option<String>,
@@ -308,6 +311,116 @@ impl KickClient {
             .into_iter()
             .next()
             .ok_or_else(|| AppError::KickApi("channels response had no data".into()))
+    }
+
+    /// An app access token (OAuth client credentials): no user behind it, so
+    /// it can only read Kick's public data — which is what looking up other
+    /// people's user records and channels needs, without borrowing a
+    /// streamer's sign-in. Cached process-wide until a minute before expiry.
+    pub async fn app_access_token(&self) -> Result<String, AppError> {
+        static CACHE: std::sync::OnceLock<
+            tokio::sync::Mutex<Option<(String, chrono::DateTime<chrono::Utc>)>>,
+        > = std::sync::OnceLock::new();
+        let mut cached = CACHE
+            .get_or_init(|| tokio::sync::Mutex::new(None))
+            .lock()
+            .await;
+        if let Some((token, expires_at)) = cached.as_ref() {
+            if *expires_at > chrono::Utc::now() + chrono::Duration::seconds(60) {
+                return Ok(token.clone());
+            }
+        }
+
+        self.permit().await;
+        let resp = self
+            .http
+            .post(TOKEN_URL)
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", self.client_id.as_str()),
+                ("client_secret", self.client_secret.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| AppError::KickApi(format!("app token request failed: {e}")))?;
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::KickApi(format!("app token body: {e}")))?;
+        if !status.is_success() {
+            return Err(AppError::KickApi(format!(
+                "app token failed: {status} - {}",
+                body.trim()
+            )));
+        }
+        let tokens: TokenResponse = serde_json::from_str(&body)
+            .map_err(|e| AppError::KickApi(format!("app token parse: {e}")))?;
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(tokens.expires_in.max(60));
+        *cached = Some((tokens.access_token.clone(), expires_at));
+        Ok(tokens.access_token)
+    }
+
+    /// `GET /users?id=…` for up to 50 accounts (an app token is enough).
+    pub async fn get_users_by_ids(
+        &self,
+        user_ids: &[i64],
+        access_token: &str,
+    ) -> Result<Vec<KickUser>, AppError> {
+        self.get_list("users", "id", user_ids, access_token).await
+    }
+
+    /// `GET /channels?broadcaster_user_id=…` for up to 50 accounts — every
+    /// Kick account has a channel, and its `slug` is the account's address
+    /// on kick.com. Needs an app token: a viewer's own `user:read` sign-in
+    /// lacks the `channel:read` scope this endpoint wants from user tokens.
+    pub async fn get_channels_by_users(
+        &self,
+        user_ids: &[i64],
+        access_token: &str,
+    ) -> Result<Vec<KickChannel>, AppError> {
+        self.get_list("channels", "broadcaster_user_id", user_ids, access_token)
+            .await
+    }
+
+    async fn get_list<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        param: &str,
+        ids: &[i64],
+        access_token: &str,
+    ) -> Result<Vec<T>, AppError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let qs = ids
+            .iter()
+            .take(50)
+            .map(|id| format!("{param}={id}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.permit().await;
+        let resp = self
+            .http
+            .get(format!("{API_BASE}/{path}?{qs}"))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| AppError::KickApi(format!("{path} request failed: {e}")))?;
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::KickApi(format!("{path} body: {e}")))?;
+        if !status.is_success() {
+            return Err(AppError::KickApi(format!(
+                "{path} lookup: {status} - {}",
+                body.trim()
+            )));
+        }
+        serde_json::from_str::<ApiList<T>>(&body)
+            .map(|l| l.data)
+            .map_err(|e| AppError::KickApi(format!("{path} parse: {e}")))
     }
 
     /// Get live channel metadata (no auth needed for public broadcaster info,

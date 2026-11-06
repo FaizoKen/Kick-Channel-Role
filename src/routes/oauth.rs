@@ -638,6 +638,37 @@ async fn viewer_callback_inner(
         }
     }
 
+    // Kick's user record sometimes has a blank `name`. The follow probe
+    // queued below is keyed by username, so look it up another way first
+    // (see follow_sync::repair_usernames); the reconcile tick retries any
+    // this misses.
+    let mut kick_username = user.name.clone();
+    if !crate::services::kick::is_kick_identifier(&kick_username) {
+        match crate::services::follow_sync::repair_usernames(&state, &client, &[user.user_id]).await
+        {
+            Ok(_) => {
+                if let Ok(Some(name)) = sqlx::query_scalar::<_, String>(
+                    "SELECT kick_username FROM kick_users WHERE kick_user_id = $1",
+                )
+                .bind(user.user_id)
+                .fetch_optional(&state.pool)
+                .await
+                {
+                    kick_username = name;
+                }
+            }
+            Err(e) => tracing::warn!(
+                kick_user_id = user.user_id,
+                "blank Kick username not repaired at link: {e}"
+            ),
+        }
+    }
+    let kick_slug = if kick_slug.is_empty() {
+        kick_username.to_ascii_lowercase().replace('_', "-")
+    } else {
+        kick_slug
+    };
+
     // Seed empty `channel_relations` rows now so the user is visible on the
     // public users page the moment the redirect completes. Without this they
     // would only appear after the player_sync worker runs — fast in practice
@@ -740,7 +771,7 @@ async fn viewer_callback_inner(
     tracing::info!(
         discord_id = %row.discord_id,
         kick_user_id = user.user_id,
-        kick_username = %user.name,
+        kick_username = %kick_username,
         "Viewer linked"
     );
 
@@ -756,7 +787,7 @@ async fn viewer_callback_inner(
     let html = VIEWER_DONE_PAGE
         .replace("{{BASE_URL}}", &state.config.base_url)
         .replace("{{VERIFY_QS}}", &verify_qs)
-        .replace("{{KICK_USERNAME}}", &user.name)
+        .replace("{{KICK_USERNAME}}", &kick_username)
         .replace("{{KICK_SLUG}}", &kick_slug)
         .replace("{{KICK_USER_ID}}", &user.user_id.to_string());
     Ok(ViewerOutcome::Linked(Bytes::from(html)))

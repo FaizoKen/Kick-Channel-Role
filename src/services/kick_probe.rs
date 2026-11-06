@@ -191,6 +191,43 @@ impl FollowProbe {
 
         parse_card(&body)
     }
+
+    /// The account behind channel `slug`, as `(user id, username)`, read from
+    /// the site API's channel page — the only place that maps a slug back to
+    /// the username the user-card endpoint above needs (a slug is not a
+    /// username: "Faizo_Ken" lives at /faizo-ken, and the card endpoint
+    /// 404s on the slug form). `None` for anything but a well-formed page.
+    pub async fn channel_owner(&self, slug: &str) -> Option<(i64, String)> {
+        if !is_safe_segment(slug) {
+            return None;
+        }
+        let url = format!(
+            "{}/api/v2/channels/{}",
+            self.base,
+            urlencoding::encode(slug)
+        );
+        self.limiter.until_ready().await;
+        let resp = self
+            .http
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        parse_channel_owner(&resp.text().await.ok()?)
+    }
+}
+
+/// `(user.id, user.username)` from a channel page body, if both are there.
+fn parse_channel_owner(body: &str) -> Option<(i64, String)> {
+    let json: Value = serde_json::from_str(body).ok()?;
+    let user = json.get("user")?;
+    let id = user.get("id")?.as_i64()?;
+    let username = user.get("username")?.as_str()?;
+    is_safe_segment(username).then(|| (id, username.to_string()))
 }
 
 /// Parse a user-card body into facts, or explain why it isn't usable.
@@ -391,6 +428,24 @@ mod tests {
     #[test]
     fn non_object_body_is_unavailable() {
         assert!(matches!(parse_card("[]"), ProbeOutcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn channel_page_names_its_owner() {
+        let body = r#"{"id":9,"user_id":42,"slug":"faizo-ken",
+            "user":{"id":42,"username":"Faizo_Ken","bio":null}}"#;
+        assert_eq!(parse_channel_owner(body), Some((42, "Faizo_Ken".into())));
+    }
+
+    #[test]
+    fn channel_page_without_a_usable_owner_is_none() {
+        assert_eq!(parse_channel_owner(r#"{"slug":"x"}"#), None);
+        assert_eq!(parse_channel_owner(r#"{"user":{"id":1}}"#), None);
+        assert_eq!(
+            parse_channel_owner(r#"{"user":{"id":1,"username":"a/b"}}"#),
+            None
+        );
+        assert_eq!(parse_channel_owner("<html>Just a moment…</html>"), None);
     }
 
     #[test]

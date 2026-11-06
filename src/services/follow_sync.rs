@@ -456,6 +456,100 @@ pub async fn sweep_stale_follows(
     Ok(discord_ids.len())
 }
 
+/// Fill in linked members whose stored Kick username is blank, from their
+/// Kick user id. Kick's own user record sometimes comes back with an empty
+/// `name` at link time (86 of ~2,100 links by 11-2026, steadily since June),
+/// and the user-card probe is keyed by username, so those members could never
+/// be probed and showed nameless everywhere. Tries Kick's user record again
+/// (one batched call), then the account's channel slug (batched) and the
+/// username on that channel's page, accepted only when the page's owner id is
+/// the same account. Needs the app's client credentials; best-effort
+/// throughout. Returns how many were filled in.
+pub async fn repair_usernames(
+    state: &Arc<AppState>,
+    client: &crate::services::kick::KickClient,
+    kick_user_ids: &[i64],
+) -> Result<usize, AppError> {
+    use crate::services::kick::is_kick_identifier;
+    if kick_user_ids.is_empty() {
+        return Ok(0);
+    }
+    let token = client.app_access_token().await?;
+    let mut repaired = 0;
+    for ids in kick_user_ids.chunks(50) {
+        let mut found: Vec<(i64, String)> = client
+            .get_users_by_ids(ids, &token)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|u| ids.contains(&u.user_id) && is_kick_identifier(&u.name))
+            .map(|u| (u.user_id, u.name))
+            .collect();
+
+        let missing: Vec<i64> = ids
+            .iter()
+            .copied()
+            .filter(|id| !found.iter().any(|(f, _)| f == id))
+            .collect();
+        let probe = state.follow_probe.as_ref().filter(|_| !missing.is_empty());
+        if let Some(probe) = probe {
+            let channels = client
+                .get_channels_by_users(&missing, &token)
+                .await
+                .unwrap_or_default();
+            for ch in channels {
+                if !missing.contains(&ch.broadcaster_user_id) {
+                    continue;
+                }
+                if let Some((owner, username)) = probe.channel_owner(&ch.slug).await {
+                    if owner == ch.broadcaster_user_id {
+                        found.push((owner, username));
+                    }
+                }
+            }
+        }
+
+        for (id, username) in found {
+            repaired += sqlx::query(
+                "UPDATE kick_users SET kick_username = $2 \
+                 WHERE kick_user_id = $1 AND btrim(kick_username) = ''",
+            )
+            .bind(id)
+            .bind(&username)
+            .execute(&state.pool)
+            .await?
+            .rows_affected() as usize;
+        }
+    }
+    Ok(repaired)
+}
+
+/// [`repair_usernames`] for every member still stored without one, oldest
+/// link first, at most `max` per call. Runs on the reconcile tick; costs one
+/// indexless scan of `kick_users` that matches nothing once they are fixed.
+pub async fn repair_blank_usernames(
+    state: &Arc<AppState>,
+    client: &crate::services::kick::KickClient,
+    max: i64,
+) -> Result<usize, AppError> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT kick_user_id FROM kick_users WHERE btrim(kick_username) = '' \
+         ORDER BY linked_at LIMIT $1",
+    )
+    .bind(max)
+    .fetch_all(&state.pool)
+    .await?;
+    let repaired = repair_usernames(state, client, &ids).await?;
+    if !ids.is_empty() {
+        tracing::info!(
+            blank = ids.len(),
+            repaired,
+            "filled in blank Kick usernames"
+        );
+    }
+    Ok(repaired)
+}
+
 /// Probe viewers whose relationships have **never** been successfully read.
 ///
 /// [`sweep_stale_follows`] deliberately only revisits relations we already
