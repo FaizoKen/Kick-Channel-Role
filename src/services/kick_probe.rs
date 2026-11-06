@@ -103,6 +103,10 @@ pub struct CardFacts {
     pub following_since: Option<DateTime<Utc>>,
     /// Months subscribed, per the card. 0 when absent or not subscribed.
     pub subscribed_for_months: i64,
+    /// Subscribed *now*: `subscribed_for > 0` or an active `subscriber`
+    /// badge. The `founder` badge is not evidence — Kick keeps it on lapsed
+    /// early subscribers (seen 11-2026 with `active: false` and
+    /// `subscribed_for: 0`, and even `active: true` with `subscribed_for: 0`).
     pub is_subscriber: bool,
     pub is_vip: bool,
     pub is_moderator: bool,
@@ -273,6 +277,8 @@ fn parse_card(body: &str) -> ProbeOutcome {
 
     // Badges mirror what `chat.message.sent` carries, so the same three
     // channel badges are recoverable here for someone who has never spoken.
+    // The card also lists badges the viewer no longer holds, marked
+    // `"active": false` (a lapsed sub's founder badge); those don't count.
     let badges = obj.get("badges").and_then(Value::as_array);
     let has_badge = |name: &str| {
         badges.is_some_and(|arr| {
@@ -280,6 +286,7 @@ fn parse_card(body: &str) -> ProbeOutcome {
                 b.get("type")
                     .and_then(Value::as_str)
                     .is_some_and(|t| t.eq_ignore_ascii_case(name))
+                    && b.get("active").and_then(Value::as_bool) != Some(false)
             })
         })
     };
@@ -288,7 +295,7 @@ fn parse_card(body: &str) -> ProbeOutcome {
         is_following,
         following_since,
         subscribed_for_months,
-        is_subscriber: has_badge("subscriber") || has_badge("founder") || subscribed_for_months > 0,
+        is_subscriber: has_badge("subscriber") || subscribed_for_months > 0,
         is_vip: has_badge("vip"),
         // `is_moderator` also appears as a top-level flag on the card.
         is_moderator: has_badge("moderator")
@@ -395,6 +402,46 @@ mod tests {
         );
         assert_eq!(f.subscribed_for_months, 7);
         assert!(f.is_subscriber && f.is_vip && f.is_og && f.is_moderator);
+    }
+
+    #[test]
+    fn a_founder_badge_alone_is_not_a_subscription() {
+        // Real cards of lapsed subscribers (11-2026): the founder badge stays,
+        // inactive or not, while `subscribed_for` drops to 0.
+        let f = facts(
+            r#"{"following_since":null,"subscribed_for":0,
+                "badges":[{"type":"founder","active":false}]}"#,
+        );
+        assert!(!f.is_subscriber);
+        let f = facts(
+            r#"{"following_since":null,"subscribed_for":0,
+                "badges":[{"type":"vip","active":true},{"type":"founder","active":true}]}"#,
+        );
+        assert!(!f.is_subscriber);
+        assert!(f.is_vip);
+    }
+
+    #[test]
+    fn an_active_subscription_is_read_from_months_or_badge() {
+        let f = facts(
+            r#"{"following_since":null,"subscribed_for":4,
+                "badges":[{"type":"subscriber","count":4,"active":true},
+                          {"type":"founder","active":true}]}"#,
+        );
+        assert!(f.is_subscriber);
+        assert_eq!(f.subscribed_for_months, 4);
+        let f = facts(r#"{"following_since":null,"badges":[{"type":"subscriber","count":2}]}"#);
+        assert!(f.is_subscriber);
+    }
+
+    #[test]
+    fn inactive_badges_are_not_held() {
+        let f = facts(
+            r#"{"following_since":null,"subscribed_for":0,
+                "badges":[{"type":"subscriber","count":3,"active":false},
+                          {"type":"vip","active":false},{"type":"og","active":false}]}"#,
+        );
+        assert!(!f.is_subscriber && !f.is_vip && !f.is_og);
     }
 
     #[test]

@@ -318,9 +318,8 @@ impl KickClient {
     /// people's user records and channels needs, without borrowing a
     /// streamer's sign-in. Cached process-wide until a minute before expiry.
     pub async fn app_access_token(&self) -> Result<String, AppError> {
-        static CACHE: std::sync::OnceLock<
-            tokio::sync::Mutex<Option<(String, chrono::DateTime<chrono::Utc>)>>,
-        > = std::sync::OnceLock::new();
+        type Cached = Option<(String, chrono::DateTime<chrono::Utc>)>;
+        static CACHE: std::sync::OnceLock<tokio::sync::Mutex<Cached>> = std::sync::OnceLock::new();
         let mut cached = CACHE
             .get_or_init(|| tokio::sync::Mutex::new(None))
             .lock()

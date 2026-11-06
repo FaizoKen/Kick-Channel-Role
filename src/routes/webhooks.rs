@@ -522,11 +522,12 @@ async fn apply_event(
             .await?;
             changed |= r.rows_affected() > 0;
 
-            // Subscriber/founder badge: set-only (the sub lifecycle is owned
-            // by subscription events + the expiry sweep; a badge seen in chat
+            // Subscriber badge: set-only (the sub lifecycle is owned by
+            // subscription events + the expiry sweep; a badge seen in chat
             // can safely raise the floor but never clears the flag). The
-            // subscriber badge `count` is months subscribed.
-            if has("subscriber") || has("founder") {
+            // subscriber badge `count` is months subscribed. The `founder`
+            // badge is not a subscription: Kick keeps it on lapsed early subs.
+            if has("subscriber") {
                 let months = count_of("subscriber").unwrap_or(1).max(1);
                 let r = sqlx::query(
                     "UPDATE channel_relations SET is_subscriber=true, \
@@ -543,6 +544,24 @@ async fn apply_event(
                 .execute(pool)
                 .await?;
                 changed |= r.rows_affected() > 0;
+
+                // The badge proves the sub is active now, so the expiry sweep
+                // must not take it away in the next few days. Without this,
+                // a sub whose renewal never reached us (stored expiry weeks
+                // old, or none at all) was flipped off every 6-hour reconcile
+                // and back on at their next message. A renewal event still
+                // sets the exact date. Writes only when the expiry is unset
+                // or under a day away.
+                sqlx::query(
+                    "UPDATE channel_relations \
+                     SET sub_expires_at = now() + interval '3 days' \
+                     WHERE kick_channel_id=$1 AND kick_user_id=$2 AND is_subscriber \
+                       AND (sub_expires_at IS NULL OR sub_expires_at < now() + interval '1 day')",
+                )
+                .bind(cid)
+                .bind(uid)
+                .execute(pool)
+                .await?;
             }
 
             // Sub-gifter badge count raises the gifted-subs floor (webhook

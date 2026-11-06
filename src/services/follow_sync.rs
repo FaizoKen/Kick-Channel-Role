@@ -333,6 +333,11 @@ async fn apply(
     // finally puts a real date in the public users page's FOLLOWED column
     // instead of an em dash. On removal it's cleared so a later re-follow
     // can't inherit a stale age.
+    //
+    // A card that shows an active sub also keeps `sub_expires_at` at least 3
+    // days out, so the expiry sweep doesn't take away a sub whose renewal
+    // never reached us (it flipped them off every reconcile and the next
+    // probe put them back). A renewal event still sets the exact date.
     sqlx::query(
         "UPDATE channel_relations SET \
              is_follower = $3, \
@@ -343,6 +348,9 @@ async fn apply(
              follow_missed_at = CASE WHEN $5 THEN now() ELSE follow_missed_at END, \
              follow_probe_misses = $6, \
              is_subscriber = is_subscriber OR $7, \
+             sub_expires_at = CASE WHEN $7 \
+                 THEN GREATEST(COALESCE(sub_expires_at, now()), now() + interval '3 days') \
+                 ELSE sub_expires_at END, \
              sub_months_cumulative = GREATEST(sub_months_cumulative, $8), \
              is_vip = is_vip OR $9, \
              is_moderator = is_moderator OR $10, \
@@ -779,6 +787,9 @@ mod tests {
                  follow_missed_at = CASE WHEN $5 THEN now() ELSE follow_missed_at END, \
                  follow_probe_misses = $6, \
                  is_subscriber = is_subscriber OR $7, \
+                 sub_expires_at = CASE WHEN $7 \
+                     THEN GREATEST(COALESCE(sub_expires_at, now()), now() + interval '3 days') \
+                     ELSE sub_expires_at END, \
                  sub_months_cumulative = GREATEST(sub_months_cumulative, $8), \
                  is_vip = is_vip OR $9, \
                  is_moderator = is_moderator OR $10, \
