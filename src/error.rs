@@ -38,6 +38,11 @@ pub enum AppError {
     #[error("Kick API error: {0}")]
     KickApi(String),
 
+    /// Kick answered a token refresh with `invalid_grant`: this channel's
+    /// sign-in is revoked for good and only a reconnect restores it.
+    #[error("Kick no longer accepts this channel's sign-in ({0}); reconnect it")]
+    KickGrantRevoked(String),
+
     #[error("Invalid request: {0}")]
     BadRequest(String),
 
@@ -111,6 +116,13 @@ impl IntoResponse for AppError {
                 )
                     .into_response()
             }
+            AppError::KickGrantRevoked(_) => (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(json!({
+                    "error": "Kick no longer accepts this channel's sign-in. Reconnect it in the role settings."
+                })),
+            )
+                .into_response(),
             AppError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": msg }))).into_response()
             }

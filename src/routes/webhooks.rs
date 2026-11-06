@@ -165,6 +165,101 @@ fn user_id_of(p: &Value, obj: &str) -> Option<i64> {
     p.get(obj)?.get("user_id")?.as_i64()
 }
 
+/// `payload.<obj>.<key>` as a Kick identifier (slug or username) fit to store
+/// and later put in a kick.com URL; anything else is ignored.
+fn identifier_of<'a>(p: &'a Value, obj: &str, key: &str) -> Option<&'a str> {
+    p.get(obj)?
+        .get(key)?
+        .as_str()
+        .filter(|s| crate::services::kick::is_kick_identifier(s))
+}
+
+/// Keep stored names current from the event itself. Kick lets streamers and
+/// viewers rename, and every event names the channel (`broadcaster.
+/// channel_slug`, `broadcaster.username`) and its actor (`sender`,
+/// `follower`, …). A renamed channel's old slug made every follow probe for
+/// it answer "Channel not found" and broke its kick.com links — in 11-2026,
+/// 11 of 162 connected channels, one with 212 linked members — and an old
+/// slug someone else later claims points the probe at the wrong channel.
+/// Each UPDATE only writes when a name actually changed. Best-effort: a
+/// failure here must never drop the event.
+async fn note_identities(pool: &sqlx::PgPool, cid: i64, p: &Value) {
+    if let Some(slug) = identifier_of(p, "broadcaster", "channel_slug") {
+        let name = identifier_of(p, "broadcaster", "username");
+        if let Err(e) = store_channel_name(pool, cid, slug, name).await {
+            tracing::debug!(kick_channel_id = cid, "broadcaster rename not stored: {e}");
+        }
+    }
+    for actor in ["sender", "follower", "subscriber", "gifter"] {
+        let (Some(uid), Some(username)) = (
+            user_id_of(p, actor).filter(|id| *id > 0),
+            identifier_of(p, actor, "username"),
+        ) else {
+            continue;
+        };
+        if let Err(e) = sqlx::query(
+            "UPDATE kick_users SET kick_username = $2 \
+             WHERE kick_user_id = $1 AND kick_username IS DISTINCT FROM $2",
+        )
+        .bind(uid)
+        .bind(username)
+        .execute(pool)
+        .await
+        {
+            tracing::debug!(kick_user_id = uid, "viewer rename not stored: {e}");
+        }
+    }
+}
+
+/// Store a channel's current slug (and display name, when known). Writes
+/// nothing when neither changed. Slugs are unique (`idx_broadcasters_slug`),
+/// so if another connected channel still holds this slug from before its own
+/// rename, Kick has just told us it is stale: it is parked on a placeholder
+/// that no kick.com URL or follow probe accepts (`~` fails both checks) until
+/// that channel's own event or reconcile stores its real name.
+pub(crate) async fn store_channel_name(
+    pool: &sqlx::PgPool,
+    cid: i64,
+    slug: &str,
+    display_name: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    async fn write(
+        pool: &sqlx::PgPool,
+        cid: i64,
+        slug: &str,
+        display_name: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE broadcasters SET kick_slug = $2, \
+                    display_name = COALESCE($3, display_name), updated_at = now() \
+             WHERE kick_channel_id = $1 \
+               AND (kick_slug IS DISTINCT FROM $2 \
+                    OR ($3::text IS NOT NULL AND display_name IS DISTINCT FROM $3))",
+        )
+        .bind(cid)
+        .bind(slug)
+        .bind(display_name)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    }
+
+    match write(pool, cid, slug, display_name).await {
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
+            sqlx::query(
+                "UPDATE broadcasters SET kick_slug = '~renamed-' || kick_channel_id::text \
+                 WHERE lower(kick_slug) = lower($2) AND kick_channel_id <> $1",
+            )
+            .bind(cid)
+            .bind(slug)
+            .execute(pool)
+            .await?;
+            write(pool, cid, slug, display_name).await
+        }
+        other => other,
+    }
+}
+
 fn ts_of(p: &Value, key: &str) -> Option<DateTime<Utc>> {
     p.get(key)
         .and_then(Value::as_str)
@@ -185,6 +280,8 @@ async fn apply_event(
         tracing::warn!(event_type, "webhook missing broadcaster.user_id; skipping");
         return Ok(());
     };
+
+    note_identities(pool, cid, p).await;
 
     match et.as_str() {
         // Live state is kept only for the admin "LIVE" badge — no rule

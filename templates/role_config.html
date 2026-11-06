@@ -510,6 +510,8 @@ function render(){
 
   let chanBlk='';
   if(showChan){
+    const shown=sel||chans[0];
+    const stale=!!(shown&&shown.needs_reconnect);
     chanBlk = chans.length===0 ? `
       <div class="blk"><label>Your Kick channel</label>
         <div class="connectcta">
@@ -520,11 +522,14 @@ function render(){
       <div class="blk"><label>Your Kick channel</label>
         <div class="row">
           <div class="inline" style="flex:1; min-width:0">
-            <b>${esc((sel||chans[0]).display_name)}</b>
-            <span style="color:#8a93a4">@${esc((sel||chans[0]).kick_slug)}</span>${(sel||chans[0]).is_live?' • <span class="live">LIVE</span>':''}
+            <b>${esc(shown.display_name)}</b>
+            <span style="color:#8a93a4">@${esc(shown.kick_slug)}</span>${shown.is_live?' • <span class="live">LIVE</span>':''}
           </div>
-          <button id="connect">Connect a different channel</button>
+          <button id="connect"${stale?' class="primary"':''}>${stale?'Reconnect channel':'Connect a different channel'}</button>
         </div>
+        ${stale?`<p class="count" style="color:#fbbf24">Kick has signed RoleLogic out of ${esc(shown.display_name)}.
+          Reconnect it: sign in on Kick as ${esc(shown.display_name)} and leave every box ticked.
+          Until then this role can miss changes.</p>`:''}
         ${sel&&sel.is_live?`<p class="count">🔴 <span class="live">${esc(sel.display_name)} is live</span>${sel.current_category?' — '+esc(sel.current_category):''}</p>`:''}
       </div>`;
   }

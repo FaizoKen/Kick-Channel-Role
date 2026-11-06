@@ -223,8 +223,15 @@ impl KickClient {
             .await
             .map_err(|e| AppError::KickApi(format!("refresh body: {e}")))?;
         if !status.is_success() {
+            // `invalid_grant` is final for this refresh token (revoked,
+            // expired or already used); retrying it can never succeed, so the
+            // caller is told apart from a transient failure.
+            if is_invalid_grant(status.as_u16(), &body) {
+                return Err(AppError::KickGrantRevoked(format!("{status}")));
+            }
             return Err(AppError::KickApi(format!(
-                "refresh failed: {status} - {body}"
+                "refresh failed: {status} - {}",
+                body.trim()
             )));
         }
         serde_json::from_str(&body)
@@ -490,9 +497,65 @@ fn pkce_s256(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
+/// Whether a failed token response is OAuth's `invalid_grant` (RFC 6749
+/// §5.2): the refresh token is revoked, expired or already used, so no retry
+/// of it can succeed. Read from the spec'd `error` field, not the message
+/// text, and only on the 4xx statuses the spec allows for it.
+pub fn is_invalid_grant(status: u16, body: &str) -> bool {
+    if !(400..500).contains(&status) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(|e| e == "invalid_grant"))
+        .unwrap_or(false)
+}
+
+/// Kick channel slugs and usernames as they may be stored and later spliced
+/// into kick.com URLs: non-empty, at most 64 characters, `[A-Za-z0-9_.-]`.
+/// Anything else from a webhook payload is ignored rather than stored.
+pub fn is_kick_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_grant_is_recognised_from_the_error_field() {
+        // Kick's real answer for a dead refresh token (11-2026).
+        let body = "{\"error\":\"invalid_grant\",\"error_description\":\"The provided \
+                    authorization grant ... or refresh token is invalid, expired, revoked\"}\n";
+        assert!(is_invalid_grant(401, body));
+        assert!(is_invalid_grant(400, body));
+    }
+
+    #[test]
+    fn other_token_failures_are_not_a_revoked_grant() {
+        // Transient or different failures must stay retryable.
+        assert!(!is_invalid_grant(500, r#"{"error":"invalid_grant"}"#));
+        assert!(!is_invalid_grant(401, r#"{"error":"invalid_client"}"#));
+        assert!(!is_invalid_grant(429, "Too Many Requests"));
+        assert!(!is_invalid_grant(
+            400,
+            r#"{"message":"invalid_grant mentioned in prose"}"#
+        ));
+    }
+
+    #[test]
+    fn kick_identifiers_are_checked_before_storing() {
+        assert!(is_kick_identifier("pixelplaza"));
+        assert!(is_kick_identifier("Faizo_Ken"));
+        assert!(is_kick_identifier("some-channel.tv"));
+        assert!(!is_kick_identifier(""));
+        assert!(!is_kick_identifier("../admin"));
+        assert!(!is_kick_identifier("a b"));
+        assert!(!is_kick_identifier(&"x".repeat(65)));
+    }
 
     #[test]
     fn pkce_challenge_known_vector() {

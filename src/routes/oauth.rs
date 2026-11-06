@@ -235,6 +235,7 @@ async fn broadcaster_callback_inner(
              is_live = EXCLUDED.is_live, \
              current_category = EXCLUDED.current_category, \
              viewer_count = EXCLUDED.viewer_count, \
+             token_invalid_at = NULL, \
              last_synced_at = now(), \
              updated_at = now()",
     )

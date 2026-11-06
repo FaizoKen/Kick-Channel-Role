@@ -83,6 +83,10 @@ pub async fn run_migrations(pool: &PgPool) {
             "014",
             include_str!("../migrations/014_chat_activity_days.sql"),
         ),
+        (
+            "015",
+            include_str!("../migrations/015_broadcaster_token_invalid.sql"),
+        ),
     ];
     for (id, sql) in migrations {
         sqlx::raw_sql(sql)

@@ -105,7 +105,9 @@ src/
     auth.rs            # cookie+manager / guild-permission helpers
     kick.rs            # Kick API client (OAuth/PKCE, Helix-eq, webhooks)
     crypto.rs          # HKDF + AES-256-GCM token-at-rest encryption
-    broadcaster_token.rs # decrypt → refresh → re-persist access tokens
+    broadcaster_token.rs # decrypt → refresh → re-persist access tokens; one
+                       #   refresh per channel at a time; `invalid_grant` marks
+                       #   the sign-in revoked (settings ask to reconnect)
     condition_eval.rs  # sync Rust rule evaluator (Convention 5)
     rule_sql.rs        # SQL WHERE pushdown for bulk per-role-link sync
     rule_validator.rs  # save-time rule-tree validation

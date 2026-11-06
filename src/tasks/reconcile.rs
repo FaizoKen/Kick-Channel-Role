@@ -45,7 +45,11 @@ pub async fn run(state: Arc<AppState>, mut shutdown: ShutdownGuard) {
         _ = shutdown.wait() => return,
     }
 
+    // A tokio interval's first tick completes immediately. Spend it here, or
+    // the first cycle (right after INITIAL_DELAY) is followed at once by a
+    // second one, re-probing and re-refreshing everything twice per restart.
     let mut interval = tokio::time::interval(TICK);
+    interval.tick().await;
     loop {
         gc(&state).await;
 
@@ -154,38 +158,68 @@ async fn age_chat_activity(state: &Arc<AppState>) {
 /// Refresh one channel's live state, expire lapsed subscriptions, and fan
 /// out a `channel_sync`. Used by the periodic reconcile loop and by the
 /// on-demand `channel_refresh` job (member-triggered from the verify page).
+///
+/// Only steps 0–1 need the broadcaster's Kick token. Without one (Kick
+/// revoked the sign-in, or the token endpoint is down) they are skipped and
+/// the rest still runs: lapsed subscriptions must expire and roles must
+/// converge whether or not Kick accepts the channel's sign-in. (This used to
+/// return early instead, so a channel with a dead token kept every lapsed
+/// subscriber's role indefinitely.)
 pub async fn reconcile_channel(
     state: &Arc<AppState>,
     client: &KickClient,
     cid: i64,
 ) -> Result<(), crate::error::AppError> {
-    let token = valid_access_token(state, client, cid).await?;
+    let token = match valid_access_token(state, client, cid).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(
+                kick_channel_id = cid,
+                "no Kick token this cycle; skipping live state and subscription repair: {e}"
+            );
+            None
+        }
+    };
 
-    // 0. Self-heal webhook subscriptions: (re)subscribe any event type this
-    // channel has no active subscription for. Covers channels connected
-    // before a subscription bug-fix or an EVENT_TYPES catalog change —
-    // without this, only a broadcaster reconnect would pick those up.
-    if let Err(e) =
-        crate::routes::oauth::subscribe_missing_channel_events(state, client, cid, &token).await
-    {
-        tracing::warn!(kick_channel_id = cid, "subscription self-heal failed: {e}");
-    }
+    if let Some(token) = token.as_deref() {
+        // 0. Self-heal webhook subscriptions: (re)subscribe any event type
+        // this channel has no active subscription for. Covers channels
+        // connected before a subscription bug-fix or an EVENT_TYPES catalog
+        // change — without this, only a broadcaster reconnect would pick
+        // those up.
+        if let Err(e) =
+            crate::routes::oauth::subscribe_missing_channel_events(state, client, cid, token).await
+        {
+            tracing::warn!(kick_channel_id = cid, "subscription self-heal failed: {e}");
+        }
 
-    // 1. Live state (also proves the broadcaster token still works).
-    if let Ok(ch) = client.refresh_channel_live_state(cid, &token).await {
-        let is_live = ch.stream.as_ref().map(|s| s.is_live).unwrap_or(false);
-        let viewers = ch.stream.as_ref().map(|s| s.viewer_count).unwrap_or(0);
-        let category = ch.category.as_ref().and_then(|c| c.name.clone());
-        let _ = sqlx::query(
-            "UPDATE broadcasters SET is_live=$2, current_category=$3, viewer_count=$4, \
-             last_synced_at=now(), updated_at=now() WHERE kick_channel_id=$1",
-        )
-        .bind(cid)
-        .bind(is_live)
-        .bind(category.as_deref())
-        .bind(viewers)
-        .execute(&state.pool)
-        .await;
+        // 1. Live state, and the channel's current slug: a streamer can
+        // rename their channel, and every kick.com link and follow probe is
+        // keyed by the slug (webhooks also carry it — see
+        // `webhooks::note_identities`).
+        if let Ok(ch) = client.refresh_channel_live_state(cid, token).await {
+            let is_live = ch.stream.as_ref().map(|s| s.is_live).unwrap_or(false);
+            let viewers = ch.stream.as_ref().map(|s| s.viewer_count).unwrap_or(0);
+            let category = ch.category.as_ref().and_then(|c| c.name.clone());
+            let _ = sqlx::query(
+                "UPDATE broadcasters SET is_live=$2, current_category=$3, viewer_count=$4, \
+                 updated_at=now() WHERE kick_channel_id=$1",
+            )
+            .bind(cid)
+            .bind(is_live)
+            .bind(category.as_deref())
+            .bind(viewers)
+            .execute(&state.pool)
+            .await;
+            if crate::services::kick::is_kick_identifier(&ch.slug) {
+                if let Err(e) =
+                    crate::routes::webhooks::store_channel_name(&state.pool, cid, &ch.slug, None)
+                        .await
+                {
+                    tracing::warn!(kick_channel_id = cid, "channel rename not stored: {e}");
+                }
+            }
+        }
     }
 
     // 2. Expire lapsed subscriptions. A renewal webhook advances
@@ -202,6 +236,15 @@ pub async fn reconcile_channel(
     .bind(cid)
     .execute(&state.pool)
     .await?;
+
+    // The channel has been reconciled, token or not. The verify page and the
+    // link flow use this as a cooldown before queueing another
+    // channel_refresh; stamped only on a live-state read, a channel with a
+    // dead token never cooled down and every visit queued another refresh.
+    sqlx::query("UPDATE broadcasters SET last_synced_at = now() WHERE kick_channel_id = $1")
+        .bind(cid)
+        .execute(&state.pool)
+        .await?;
 
     // 3. Re-evaluate every role link bound to this channel.
     jobs::enqueue_channel_sync(&state.pool, cid).await?;

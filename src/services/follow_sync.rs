@@ -121,6 +121,8 @@ pub async fn probe_and_apply_for_player(
     // A follow Kick has denied at least once but not yet enough times to
     // remove: it needs another observation, spaced MISS_SPACING apart.
     let mut awaiting_confirmation = false;
+    // Why the last unanswered probe failed, for the warning below.
+    let mut last_reason: Option<String> = None;
 
     for row in rows {
         report.attempted += 1;
@@ -144,6 +146,7 @@ pub async fn probe_and_apply_for_player(
                     slug = %row.kick_slug,
                     "follow probe unavailable: {reason}"
                 );
+                last_reason = Some(reason);
                 sqlx::query(
                     "UPDATE channel_relations SET follow_probe_attempted_at = now() \
                      WHERE kick_channel_id = $1 AND kick_user_id = $2",
@@ -178,10 +181,13 @@ pub async fn probe_and_apply_for_player(
         // Every attempt came back with no answer. Usually transient, but a
         // sustained run of this is how we'd find out Kick changed or closed
         // the endpoint — at which point members fall back to the guided
-        // re-follow flow and nothing is silently wrong.
+        // re-follow flow and nothing is silently wrong. The reason (e.g.
+        // `http 404 Not Found` for a channel renamed since it was stored) is
+        // what tells those apart without replaying the request.
         tracing::warn!(
             discord_id = %discord_id,
             attempted = report.attempted,
+            reason = last_reason.as_deref().unwrap_or("unknown"),
             "follow probe returned no usable answer for any channel"
         );
     }

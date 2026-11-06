@@ -127,6 +127,9 @@ pub struct BroadcasterRow {
     pub current_category: Option<String>,
     pub viewer_count: i32,
     pub connected_at: chrono::DateTime<chrono::Utc>,
+    /// Kick revoked this channel's sign-in (`token_invalid_at`, migration
+    /// 015); the settings ask the admin to reconnect it.
+    pub needs_reconnect: bool,
 }
 
 pub async fn broadcaster_list(
@@ -138,7 +141,8 @@ pub async fn broadcaster_list(
     require_guild_admin(&state, &jar, &headers, &guild_id).await?;
     let rows: Vec<BroadcasterRow> = sqlx::query_as(
         "SELECT b.kick_channel_id, b.kick_slug, b.display_name, b.is_live, \
-                b.current_category, b.viewer_count, gb.connected_at \
+                b.current_category, b.viewer_count, gb.connected_at, \
+                (b.token_invalid_at IS NOT NULL) AS needs_reconnect \
          FROM guild_broadcasters gb \
          JOIN broadcasters b USING (kick_channel_id) \
          WHERE gb.guild_id = $1 \
@@ -555,7 +559,8 @@ pub async fn role_config_data(
 
     let channels = sqlx::query_as::<_, BroadcasterRow>(
         "SELECT b.kick_channel_id, b.kick_slug, b.display_name, b.is_live, \
-                b.current_category, b.viewer_count, gb.connected_at \
+                b.current_category, b.viewer_count, gb.connected_at, \
+                (b.token_invalid_at IS NOT NULL) AS needs_reconnect \
          FROM guild_broadcasters gb \
          JOIN broadcasters b USING (kick_channel_id) \
          WHERE gb.guild_id = $1 ORDER BY gb.connected_at DESC",
